@@ -5,3 +5,7 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+
+# Local-only Antigravity workspace rules
+AGENTS.md
+
