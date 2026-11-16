@@ -1,10 +1,13 @@
-const CACHE_NAME = "spendsnap-v2";
+const CACHE_NAME = "spendsnap-v3";
 const APP_SHELL = [
   "./",
   "./index.html",
+  "./privacy.html",
+  "./terms.html",
   "./styles.css",
   "./manifest.webmanifest",
   "./icons/icon.svg",
+  "./icons/icon-120.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./js/config.js",

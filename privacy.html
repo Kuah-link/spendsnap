@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy &amp; Disclaimer — SpendSnap</title>
+  <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell" style="padding-top: 24px;">
+    <header class="topbar">
+      <div class="brand">
+        <img src="./icons/icon.svg" alt="SpendSnap Logo" class="brand-icon" />
+        <div>
+          <h1 class="brand-title">SpendSnap Privacy Policy</h1>
+          <p class="brand-sub">Personal Testing Tool — Zero-Backend Client App</p>
+        </div>
+      </div>
+      <a href="./index.html" class="btn-outline-sm">← Back to App</a>
+    </header>
+
+    <div class="card-section" style="line-height: 1.6; font-size: 0.92rem;">
+      <h2 style="margin-top: 0; font-size: 1.05rem;">1. Personal Testing Notice &amp; No-SLA Disclaimer</h2>
+      <p>
+        <strong>SpendSnap</strong> is a personal, non-commercial Progressive Web App created for testing and personal expense tracking convenience.
+        It is provided strictly <strong>"AS IS"</strong> without warranties of any kind, express or implied, and <strong>no Service Level Agreement (SLA), uptime guarantee, technical support, or data recovery guarantee</strong> is provided.
+      </p>
+
+      <h2 style="font-size: 1.05rem;">2. Zero Developer Servers (How Your Data Flows)</h2>
+      <p>
+        SpendSnap runs entirely inside your web browser as a static client-side application hosted on GitHub Pages.
+        The developer operates <strong>no backend server, no analytics tracker, and no central database</strong>, and never receives, views, or stores your financial entries, receipt photos, or API credentials.
+      </p>
+      <ul>
+        <li><strong>Local Device Storage:</strong> Your app preferences, temporary offline transaction queue, and personal Gemini API key are stored locally on your own device (<code>localStorage</code> / <code>IndexedDB</code>).</li>
+        <li><strong>Google Account &amp; Drive Data (<code>drive.file</code> scope):</strong> When you sign in with Google, your browser communicates directly with Google Drive API and Google Sheets API to create and update the <code>Expense Tracker</code> folder and <code>Expense Ledger</code> spreadsheet inside <strong>your own Google Drive</strong>. SpendSnap only requests the non-sensitive <code>drive.file</code> scope (plus basic email/profile to display which account is connected) and cannot read any other files in your Google Drive.</li>
+        <li><strong>Gemini API Processing:</strong> When you scan a receipt image or PDF, your browser sends the compressed file directly to Google's Gemini API (<code>generativelanguage.googleapis.com</code>) using your own Gemini API key with interaction storage disabled (<code>store: false</code>).</li>
+      </ul>
+
+      <h2 style="font-size: 1.05rem;">3. Data Retention &amp; Revocation</h2>
+      <p>
+        All synced spreadsheets and receipt images remain 100% under your ownership inside your own Google Drive. You may delete your local app data at any time by clearing site storage in your browser, and you may revoke SpendSnap's Google access at any time via <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener" style="color: var(--primary);">Google Account Permissions</a>.
+      </p>
+
+      <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 0;">
+        Last updated: November 2026 &middot; <a href="./terms.html" style="color: var(--primary);">Terms &amp; Disclaimer</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>
