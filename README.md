@@ -49,7 +49,7 @@ Because this app uses Google's **non-sensitive `drive.file` scope**, it can only
 
 ---
 
-## 3. Free HTTPS Hosting (So Xiaomi 14 Ultra Can Access It Anywhere)
+## 3. Free HTTPS Hosting (So android or even IOS Can Access It Anywhere)
 
 Pick either free static host (takes ~1 minute, zero monthly cost):
 
@@ -64,7 +64,7 @@ Pick either free static host (takes ~1 minute, zero monthly cost):
 
 ## 4. Install on Your Phone (No Play Store or App Store Needed)
 
-### Android (Xiaomi 14 Ultra — Chrome)
+### Android (Android — Chrome)
 1. Open `https://kuah-link.github.io/spendsnap/` in **Chrome**.
 2. Tap the **Install** banner at the top (or Chrome `⋮` menu → **Add to Home screen** → **Install**).
 3. **Xiaomi HyperOS Tip:** If the icon doesn't appear on your home screen right away, long-press **Chrome** → **App info** → **Other permissions** → enable **Home screen shortcuts**, then tap **Install** once more.
