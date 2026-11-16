@@ -1,4 +1,4 @@
-const CACHE_NAME = "spendsnap-v1";
+const CACHE_NAME = "spendsnap-v2";
 const APP_SHELL = [
   "./",
   "./index.html",

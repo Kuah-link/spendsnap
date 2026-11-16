@@ -115,7 +115,12 @@ ${methodHintsText}
   const body = {
     model,
     store: false,
-    input: [{ type: "text", text: prompt }, mediaBlock],
+    input: [
+      {
+        type: "user_input",
+        content: [{ type: "text", text: prompt }, mediaBlock],
+      },
+    ],
     response_format: {
       type: "text",
       mime_type: "application/json",
