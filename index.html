@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f766e" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>SpendSnap — Personal Expense Tracker</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="stylesheet" href="./styles.css" />
+  <!-- Google Identity Services (OAuth 2.0 Token Client for Google Workspace / Gmail) -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top App Header -->
+    <header class="topbar">
+      <div class="brand">
+        <img src="./icons/icon.svg" alt="" class="brand-icon" />
+        <div>
+          <h1 class="brand-title">SpendSnap</h1>
+          <p class="brand-sub" id="monthFolderHint">Auto-folder: —</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button type="button" id="googleStatusBtn" class="status-pill status-unconfigured" title="Google Workspace Sync Status">
+          <span class="status-dot"></span>
+          <span id="googleStatusText">Setup Sync</span>
+        </button>
+
+        <a id="openSheetHeaderBtn" href="#" target="_blank" rel="noopener" class="icon-btn hidden" title="Open Google Sheet Ledger">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="8" y1="13" x2="16" y2="13"/>
+            <line x1="8" y1="17" x2="16" y2="17"/>
+          </svg>
+        </a>
+
+        <button type="button" id="openSettingsBtn" class="icon-btn" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation Switcher -->
+    <nav class="main-tabs" role="tablist">
+      <button type="button" class="tab-btn active" data-tab="record" role="tab" aria-selected="true">
+        + Record Spend
+      </button>
+      <button type="button" class="tab-btn" data-tab="history" role="tab" aria-selected="false">
+        History &amp; Summary
+        <span id="pendingBadge" class="badge hidden">0</span>
+      </button>
+    </nav>
+
+    <!-- PWA Install Banner (shown when installable on Android Chrome) -->
+    <div id="installBanner" class="install-banner hidden">
+      <span>Install <strong>SpendSnap</strong> to your Xiaomi home screen for 1-tap access.</span>
+      <button type="button" id="installAppBtn" class="btn-small">Install</button>
+    </div>
+
+    <!-- ==================== TAB 1: RECORD SPEND ==================== -->
+    <main id="tab-record" class="tab-panel">
+      <!-- Hidden file inputs: Camera vs Gallery/PDF -->
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" class="sr-only" />
+      <input type="file" id="uploadInput" accept="image/*,application/pdf" class="sr-only" />
+
+      <!-- 3 Fast Capture Modes -->
+      <section class="capture-grid" aria-label="Entry Mode">
+        <button type="button" id="snapReceiptBtn" class="capture-card capture-primary">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span class="capture-title">Snap Receipt</span>
+          <span class="capture-sub">Camera + Gemini</span>
+        </button>
+
+        <button type="button" id="uploadOnlineBtn" class="capture-card">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span class="capture-title">Online / PDF</span>
+          <span class="capture-sub">Screenshot + Gemini</span>
+        </button>
+
+        <button type="button" id="manualCashBtn" class="capture-card">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="6" width="20" height="12" rx="2"/>
+            <circle cx="12" cy="12" r="2.5"/>
+            <path d="M6 12h.01M18 12h.01"/>
+          </svg>
+          <span class="capture-title">Cash / Manual</span>
+          <span class="capture-sub">No receipt needed</span>
+        </button>
+      </section>
+
+      <!-- Gemini Scanning / Receipt Preview Strip -->
+      <section id="receiptStrip" class="receipt-strip hidden">
+        <div class="receipt-preview-row">
+          <div id="receiptThumbWrap" class="receipt-thumb-wrap" title="Tap to inspect receipt">
+            <img id="receiptThumbImg" alt="Receipt preview" class="receipt-thumb" />
+            <div id="receiptPdfBadge" class="receipt-pdf-badge hidden">PDF</div>
+          </div>
+          <div class="receipt-meta">
+            <div id="geminiStatusLine" class="gemini-status">Receipt attached</div>
+            <div id="receiptFileInfo" class="receipt-file-info"></div>
+            <div class="receipt-actions">
+              <button type="button" id="rescanGeminiBtn" class="btn-ghost-sm">✨ Re-scan with Gemini</button>
+              <button type="button" id="removeReceiptBtn" class="btn-ghost-sm danger-text">Remove</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Transaction Form -->
+      <form id="expenseForm" class="expense-form" novalidate>
+        <!-- Amount + Currency Row -->
+        <div class="card-section amount-box">
+          <div class="amount-header">
+            <label for="amountInput" class="field-label">Amount</label>
+            <span id="myrEquivalentBadge" class="myr-eq-badge hidden">≈ RM 0.00</span>
+          </div>
+          <div class="amount-input-row">
+            <select id="currencySelect" class="currency-select" aria-label="Currency"></select>
+            <input
+              type="number"
+              id="amountInput"
+              inputmode="decimal"
+              step="0.01"
+              min="0"
+              placeholder="0.00"
+              required
+              class="amount-input"
+            />
+          </div>
+
+          <!-- Foreign Currency Exchange Strip (only visible when non-MYR selected) -->
+          <div id="fxStrip" class="fx-strip hidden">
+            <div class="fx-row">
+              <span id="fxLabel">Exchange rate to MYR:</span>
+              <input type="number" id="fxRateInput" inputmode="decimal" step="0.00001" min="0" class="fx-rate-input" />
+            </div>
+            <p class="fx-hint">Sheet logs <strong>MYR</strong> total &amp; saves original currency in Remarks.</p>
+          </div>
+        </div>
+
+        <!-- Date & Item/Service Description -->
+        <div class="card-section two-col-fields">
+          <div class="field-group">
+            <label for="dateInput" class="field-label">Date</label>
+            <input type="date" id="dateInput" required class="text-input" />
+          </div>
+          <div class="field-group">
+            <label for="descriptionInput" class="field-label">Item or Service Description</label>
+            <input
+              type="text"
+              id="descriptionInput"
+              placeholder="e.g. Shell RON95, Lunch at Kopitiam, Shopee..."
+              required
+              class="text-input"
+            />
+          </div>
+        </div>
+
+        <!-- Category Chips -->
+        <div class="card-section">
+          <label class="field-label">Category</label>
+          <div id="categoryChips" class="chip-grid" role="radiogroup" aria-label="Category"></div>
+        </div>
+
+        <!-- 2-Tier Payment Method Chips -->
+        <div class="card-section">
+          <div class="section-label-row">
+            <label class="field-label">Payment Method</label>
+            <span id="selectedPaymentLabel" class="selected-pill-hint"></span>
+          </div>
+          <div id="quickPaymentChips" class="chip-grid"></div>
+
+          <button type="button" id="toggleCardsDrawerBtn" class="cards-drawer-toggle">
+            <span id="cardsDrawerBtnText">Credit Cards (8)</span>
+            <span id="cardsDrawerChevron">▾</span>
+          </button>
+
+          <div id="cardPaymentChips" class="chip-grid cards-grid hidden"></div>
+        </div>
+
+        <!-- Remarks -->
+        <div class="card-section">
+          <label for="remarksInput" class="field-label">Remarks <span class="optional-tag">(Optional)</span></label>
+          <input
+            type="text"
+            id="remarksInput"
+            placeholder="Optional notes, who/where, order ref..."
+            class="text-input"
+          />
+        </div>
+
+        <!-- Sticky / Prominent Submit -->
+        <button type="submit" id="saveExpenseBtn" class="btn-submit">
+          Save Transaction
+        </button>
+      </form>
+    </main>
+
+    <!-- ==================== TAB 2: HISTORY & SUMMARY ==================== -->
+    <section id="tab-history" class="tab-panel hidden">
+      <!-- Pending Offline Sync Banner -->
+      <div id="pendingSyncCard" class="pending-card hidden">
+        <div>
+          <strong id="pendingCountTitle">1 unsynced entry</strong>
+          <p class="pending-sub">Saved safely on your phone. Sync to upload receipts &amp; rows to Google.</p>
+        </div>
+        <button type="button" id="syncPendingNowBtn" class="btn-small">Sync Now</button>
+      </div>
+
+      <!-- Quick Monthly Summary Card -->
+      <div class="card-section summary-card">
+        <div class="summary-top">
+          <div>
+            <span class="field-label">Month Filter</span>
+            <select id="historyMonthSelect" class="month-select"></select>
+          </div>
+          <div class="summary-total-box">
+            <span class="field-label">Monthly Total</span>
+            <div id="historyMonthTotal" class="summary-big-total">RM 0.00</div>
+          </div>
+        </div>
+
+        <div id="categoryBreakdownBars" class="breakdown-bars"></div>
+
+        <div class="summary-actions">
+          <button type="button" id="refreshCloudHistoryBtn" class="btn-outline-sm">↻ Refresh from Sheet</button>
+          <a id="openFullSheetBtn" href="#" target="_blank" rel="noopener" class="btn-outline-sm hidden">
+            Open Full Dashboard in Sheets ↗
+          </a>
+        </div>
+      </div>
+
+      <!-- Recent Transactions List -->
+      <div class="card-section">
+        <h2 class="section-heading">Transactions</h2>
+        <div id="historyList" class="history-list"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ==================== RECEIPT LIGHTBOX MODAL ==================== -->
+  <div id="lightboxModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="lightbox-box">
+      <img id="lightboxImg" alt="Full receipt" class="lightbox-img" />
+      <button type="button" id="closeLightboxBtn" class="btn-small">Close Preview</button>
+    </div>
+  </div>
+
+  <!-- ==================== SETTINGS MODAL ==================== -->
+  <div id="settingsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <h2 id="settingsTitle">Settings &amp; Cloud Setup</h2>
+        <button type="button" id="closeSettingsBtn" class="icon-btn" aria-label="Close Settings">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- 1. Gemini AI -->
+        <div class="settings-block">
+          <h3>1. Gemini Receipt Auto-Fill</h3>
+          <p class="settings-help">
+            Reads snapped receipts, card slips &amp; online screenshots in ~2s. Stored locally on this device only.
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get API Key ↗</a>
+          </p>
+          <label class="field-label" for="geminiKeyInput">Gemini API Key</label>
+          <div class="input-with-btn">
+            <input type="password" id="geminiKeyInput" placeholder="AIzaSy..." class="text-input" autocomplete="off" />
+            <button type="button" id="toggleKeyVisBtn" class="btn-outline-sm">Show</button>
+          </div>
+
+          <label class="field-label mt-sm" for="geminiModelSelect">Gemini Model</label>
+          <select id="geminiModelSelect" class="text-input"></select>
+        </div>
+
+        <!-- 2. Google Workspace Sync -->
+        <div class="settings-block">
+          <h3>2. Google Workspace Sheets &amp; Drive</h3>
+          <p class="settings-help">
+            Each signed-in user gets their own private <code>Expense Tracker</code> Drive folder
+            (<code>Receipts/YYYY/YYYY-MM</code>) and 3-tab <code>Expense Ledger</code> Sheet.
+          </p>
+          <label class="field-label" for="googleClientIdInput">Google OAuth Client ID</label>
+          <input
+            type="text"
+            id="googleClientIdInput"
+            placeholder="123456789-abc...apps.googleusercontent.com"
+            class="text-input"
+          />
+
+          <div class="settings-btn-row mt-sm">
+            <button type="button" id="settingsGoogleConnectBtn" class="btn-primary-sm">
+              Sign in with Google
+            </button>
+            <button type="button" id="settingsGoogleSignOutBtn" class="btn-outline-sm hidden">
+              Sign Out
+            </button>
+            <button type="button" id="copyColleagueLinkBtn" class="btn-outline-sm">
+              Copy Colleague Invite Link
+            </button>
+          </div>
+          <p id="connectedAccountInfo" class="settings-connected-note"></p>
+        </div>
+
+        <!-- 3. Categories -->
+        <div class="settings-block">
+          <h3>3. Spending Categories</h3>
+          <p class="settings-help">One category per line. Synced with your Sheet's <code>Settings</code> tab.</p>
+          <textarea id="categoriesTextarea" rows="6" class="text-input mono-textarea"></textarea>
+        </div>
+
+        <!-- 4. Payment Methods & Card Last-4 Digits -->
+        <div class="settings-block">
+          <div class="section-label-row">
+            <h3>4. Payment Methods &amp; Cards</h3>
+          </div>
+          <p class="settings-help">
+            Format: <code>Name | quick or card | Optional card last-4 digits or hints</code><br/>
+            <em>Tip: Add your card's last 4 digits (e.g. <code>RHB Shell | card | 4821, Shell</code>) so Gemini auto-selects that exact card from receipts!</em>
+          </p>
+          <textarea id="paymentMethodsTextarea" rows="9" class="text-input mono-textarea"></textarea>
+
+          <div class="settings-btn-row mt-sm">
+            <button type="button" id="loadMyCardsPresetBtn" class="btn-outline-sm">
+              Load My 8-Card Preset
+            </button>
+            <button type="button" id="loadColleaguePresetBtn" class="btn-outline-sm">
+              Colleague Simple Preset
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" id="pullSheetSettingsBtn" class="btn-outline-sm">Pull from Sheet</button>
+        <button type="button" id="saveSettingsBtn" class="btn-primary-sm">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
