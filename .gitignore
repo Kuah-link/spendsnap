@@ -6,6 +6,10 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local-only Antigravity workspace rules
+# Local-only Antigravity workspace rules & private credentials (NEVER commit)
 AGENTS.md
+.secrets/
+*client_secret*.json
+*.env
+
 
