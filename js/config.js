@@ -87,8 +87,9 @@ export const GEMINI_MODELS = [
   },
 ];
 
-// Optional: paste your OAuth Client ID here before deploying so you & colleagues never have to type it in Settings
-export const EMBEDDED_GOOGLE_CLIENT_ID = "";
+// Embedded OAuth Client ID (locked to Authorized JavaScript Origins in Google Cloud)
+export const EMBEDDED_GOOGLE_CLIENT_ID =
+  "792845419810-3ntqu8ueshr2di8m1eqcgpf7p6iofrl2.apps.googleusercontent.com";
 
 const SETTINGS_KEY = "spendsnap_settings_v1";
 
