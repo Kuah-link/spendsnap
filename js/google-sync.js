@@ -1,11 +1,18 @@
 // Google Workspace / Google Account OAuth (drive.file) + Drive Monthly Folders + 4-Tab Ledger Sheet (with Bukku Export)
 
 import { base64ToBlob, buildReceiptFilename } from "./image-utils.js";
-import { loadSettings, saveSettings, formatTimestampLocal } from "./config.js";
+import {
+  loadSettings,
+  saveSettings,
+  formatTimestampLocal,
+  APP_VERSION,
+  EMBEDDED_USAGE_WEBHOOK_URL,
+} from "./config.js";
 
 const SCOPES = "https://www.googleapis.com/auth/drive.file email profile";
 const TOKEN_STORAGE_KEY = "spendsnap_oauth_token_v1";
 const FOLDER_CACHE_KEY = "spendsnap_folder_cache_v1";
+const LAST_USAGE_PING_KEY = "spendsnap_last_usage_ping_v1";
 export const CURRENT_DASHBOARD_SCHEMA_VERSION = 5;
 
 let tokenClient = null;
@@ -54,6 +61,7 @@ export function signOutGoogle() {
   localStorage.removeItem(FOLDER_CACHE_KEY);
   saveSettings({
     userEmail: "",
+    userName: "",
     driveRootFolderId: "",
     driveReceiptsFolderId: "",
     spreadsheetId: "",
@@ -111,6 +119,7 @@ export function requestGoogleSignIn({ interactive = true } = {}) {
             localStorage.removeItem(FOLDER_CACHE_KEY);
             saveSettings({
               userEmail: profile.email,
+              userName: profile.name || "",
               bukkuEmployeeName: profile.name || "",
               driveRootFolderId: "",
               driveReceiptsFolderId: "",
@@ -121,11 +130,13 @@ export function requestGoogleSignIn({ interactive = true } = {}) {
           } else if (profile.email) {
             saveSettings({
               userEmail: profile.email,
+              userName: profile.name || prevSettings.userName || "",
               ...(!prevSettings.bukkuEmployeeName && profile.name
                 ? { bukkuEmployeeName: profile.name }
                 : {}),
             });
           }
+          pingActiveUserRoster({ force: interactive });
           await ensureWorkspaceProvisioned(resp.access_token);
           pendingTokenResolve?.(resp.access_token);
         } catch (err) {
@@ -161,6 +172,77 @@ async function fetchUserProfile(accessToken) {
   });
   if (!res.ok) return { email: "" };
   return res.json();
+}
+
+function detectDeviceSummary() {
+  const ua = String(navigator.userAgent || "");
+  let device = "Desktop";
+  if (/iPhone|iPad|iPod/i.test(ua)) {
+    device = "iPhone / iPad (iOS)";
+  } else if (/Android/i.test(ua)) {
+    device = "Android";
+  }
+  const isStandalone =
+    window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    window.navigator.standalone === true;
+  return {
+    device,
+    installMode: isStandalone ? "Home-Screen PWA" : "Browser Tab",
+  };
+}
+
+export function pingActiveUserRoster({ force = false } = {}) {
+  try {
+    const webhookUrl = String(EMBEDDED_USAGE_WEBHOOK_URL || "").trim();
+    if (!webhookUrl) return;
+
+    const settings = loadSettings();
+    if (settings.shareUsagePing === false) return;
+    const email = String(settings.userEmail || "").trim();
+    if (!email) return;
+
+    const now = Date.now();
+    if (!force) {
+      try {
+        const last = JSON.parse(localStorage.getItem(LAST_USAGE_PING_KEY) || "null");
+        if (
+          last &&
+          last.email === email.toLowerCase() &&
+          now - Number(last.ts || 0) < 12 * 60 * 60 * 1000
+        ) {
+          return;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    localStorage.setItem(
+      LAST_USAGE_PING_KEY,
+      JSON.stringify({ email: email.toLowerCase(), ts: now })
+    );
+
+    const { device, installMode } = detectDeviceSummary();
+    const payload = {
+      app: "spendsnap",
+      email,
+      name: String(settings.userName || settings.bukkuEmployeeName || "").trim(),
+      device,
+      installMode,
+      appVersion: APP_VERSION,
+    };
+
+    // Write-only text/plain POST avoids CORS preflight on Google Apps Script Web Apps
+    fetch(webhookUrl, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // Non-fatal: never interrupt user workflow
+  }
 }
 
 // ---------------- Google Drive & Sheets Provisioning ----------------

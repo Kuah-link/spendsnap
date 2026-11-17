@@ -105,6 +105,11 @@ export const GEMINI_MODELS = [
 export const EMBEDDED_GOOGLE_CLIENT_ID =
   "792845419810-3ntqu8ueshr2di8m1eqcgpf7p6iofrl2.apps.googleusercontent.com";
 
+// App release tag & optional write-only Apps Script webhook for active-tester roster
+// (sends ONLY name, email, device & appVersion — never financial entries, receipts, or keys)
+export const APP_VERSION = "spendsnap-v9";
+export const EMBEDDED_USAGE_WEBHOOK_URL = "";
+
 const SETTINGS_KEY = "spendsnap_settings_v1";
 
 export function loadSettings() {
@@ -159,6 +164,8 @@ export function loadSettings() {
     defaultPaymentMethod: saved.defaultPaymentMethod || "QR / eWallet",
     bukkuEmployeeName: saved.bukkuEmployeeName || "",
     userEmail: saved.userEmail || "",
+    userName: saved.userName || "",
+    shareUsagePing: saved.shareUsagePing !== false,
     driveRootFolderId: saved.driveRootFolderId || "",
     driveReceiptsFolderId: saved.driveReceiptsFolderId || "",
     spreadsheetId: saved.spreadsheetId || "",

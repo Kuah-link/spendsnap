@@ -30,6 +30,7 @@ import {
   pullSettingsFromSheet,
   fetchRecentSheetSummary,
   repairDashboardTab,
+  pingActiveUserRoster,
   CURRENT_DASHBOARD_SCHEMA_VERSION,
 } from "./google-sync.js";
 
@@ -115,6 +116,7 @@ function init() {
   refreshPendingCountAndHistory();
 
   bindEvents();
+  pingActiveUserRoster();
 
   // Auto-upgrade existing Sheet Settings (65xx Expense Codes) & Dashboard formulas if active
   if (
@@ -1278,6 +1280,7 @@ function openSettingsModal() {
   el("geminiModelSelect").value = settings.geminiModel || "gemini-4-hydrogen";
   el("bukkuEmployeeInput").value = settings.bukkuEmployeeName || "";
   el("googleClientIdInput").value = settings.googleClientId || "";
+  el("shareUsagePingCheckbox").checked = settings.shareUsagePing !== false;
   el("categoriesTextarea").value = settings.categories.join("\n");
   el("paymentMethodsTextarea").value = formatPaymentMethodsText(
     settings.paymentMethods
@@ -1345,6 +1348,7 @@ async function saveSettingsFromModal() {
     geminiModel: el("geminiModelSelect").value,
     bukkuEmployeeName: el("bukkuEmployeeInput").value.trim(),
     googleClientId: el("googleClientIdInput").value.trim(),
+    shareUsagePing: el("shareUsagePingCheckbox").checked,
     categories: cats.length ? cats : [...DEFAULT_CATEGORIES],
     paymentMethods: methods.length ? methods : DEFAULT_PAYMENT_METHODS,
   });
