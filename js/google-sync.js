@@ -6,6 +6,7 @@ import { loadSettings, saveSettings, formatTimestampLocal } from "./config.js";
 const SCOPES = "https://www.googleapis.com/auth/drive.file email profile";
 const TOKEN_STORAGE_KEY = "spendsnap_oauth_token_v1";
 const FOLDER_CACHE_KEY = "spendsnap_folder_cache_v1";
+export const CURRENT_DASHBOARD_SCHEMA_VERSION = 2;
 
 let tokenClient = null;
 let pendingTokenResolve = null;
@@ -57,6 +58,7 @@ export function signOutGoogle() {
     driveReceiptsFolderId: "",
     spreadsheetId: "",
     spreadsheetUrl: "",
+    dashboardSchemaVersion: 1,
   });
 }
 
@@ -113,6 +115,7 @@ export function requestGoogleSignIn({ interactive = true } = {}) {
               driveReceiptsFolderId: "",
               spreadsheetId: "",
               spreadsheetUrl: "",
+              dashboardSchemaVersion: 1,
             });
           } else if (profile.email) {
             saveSettings({ userEmail: profile.email });
@@ -296,7 +299,23 @@ export async function ensureWorkspaceProvisioned(explicitToken) {
     driveReceiptsFolderId: receiptsFolderId,
     spreadsheetId,
     spreadsheetUrl,
+    ...(createdNewSheet
+      ? { dashboardSchemaVersion: CURRENT_DASHBOARD_SCHEMA_VERSION }
+      : {}),
   });
+
+  // Auto-upgrade existing v1 Sheet Dashboard formulas (shift-proof whole-column SUMIFS/QUERY)
+  if (
+    !createdNewSheet &&
+    (settings.dashboardSchemaVersion || 1) < CURRENT_DASHBOARD_SCHEMA_VERSION
+  ) {
+    try {
+      await repairDashboardTab(accessToken);
+      settings = loadSettings();
+    } catch {
+      // Non-fatal if offline or custom sheet
+    }
+  }
 
   // If connecting to an existing sheet on a new device, pull their saved Categories & Cards
   if (!createdNewSheet) {
@@ -310,16 +329,449 @@ export async function ensureWorkspaceProvisioned(explicitToken) {
   return settings;
 }
 
-// ---------------- 3-Tab Ledger Sheet Builder ----------------
+// ---------------- 3-Tab Ledger Sheet Builder & Upgrader ----------------
+
+const SETTINGS_MONTH_HELPER_VALUES = [
+  ["Available Months (Auto)"],
+  [
+    '=UNIQUE({TEXT(TODAY(),"yyyy-mm"); IFERROR(FILTER(Transactions!C:C, Transactions!C:C<>"", Transactions!C:C<>"Year-Month"), TEXT(TODAY(),"yyyy-mm"))})',
+  ],
+];
+
+function buildDashboardRows() {
+  const now = new Date();
+  const currentYear = String(now.getFullYear());
+  const currentYearMonth = `${currentYear}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+  // Whole-column shift-proof references (never shift when rows are appended/inserted/deleted)
+  const normMonth = 'IF(ISNUMBER($B$3), TEXT($B$3,"yyyy-mm"), TRIM(TO_TEXT($B$3)))';
+  const normYearPrefix = 'TRIM(TO_TEXT($E$3))&"-*"';
+
+  const dashboardRows = [
+    ["SPENDSNAP — PERSONAL SPENDING DASHBOARD", "", "", "", "", "", ""],
+    ["", "", "", "", "", "", ""],
+    [
+      "Selected Month (YYYY-MM):",
+      `'${currentYearMonth}`,
+      "",
+      "Selected Year:",
+      currentYear,
+      "",
+      "",
+    ],
+    ["", "", "", "", "", "", ""],
+    [
+      "Month Spend (MYR)",
+      `=SUMIFS(Transactions!$F:$F, Transactions!$C:$C, ${normMonth})`,
+      "Month Txns",
+      `=COUNTIFS(Transactions!$C:$C, ${normMonth})`,
+      "Full Year Spend (MYR)",
+      `=SUMIFS(Transactions!$F:$F, Transactions!$C:$C, ${normYearPrefix})`,
+      "",
+    ],
+    ["", "", "", "", "", "", ""],
+    [
+      "Category",
+      "Selected Month (MYR)",
+      "Full Year (MYR)",
+      "",
+      "Payment Method / Card",
+      "Selected Month (MYR)",
+      "Full Year (MYR)",
+    ],
+  ];
+
+  for (let i = 0; i < 15; i++) {
+    const r = 8 + i; // Dashboard row number (1-indexed)
+    const sr = 2 + i; // Settings row number (1-indexed)
+    dashboardRows.push([
+      `=IF(Settings!A${sr}="","",Settings!A${sr})`,
+      `=IF(A${r}="","",SUMIFS(Transactions!$F:$F, Transactions!$E:$E, A${r}, Transactions!$C:$C, ${normMonth}))`,
+      `=IF(A${r}="","",SUMIFS(Transactions!$F:$F, Transactions!$E:$E, A${r}, Transactions!$C:$C, ${normYearPrefix}))`,
+      "",
+      `=IF(Settings!C${sr}="","",Settings!C${sr})`,
+      `=IF(E${r}="","",SUMIFS(Transactions!$F:$F, Transactions!$G:$G, E${r}, Transactions!$C:$C, ${normMonth}))`,
+      `=IF(E${r}="","",SUMIFS(Transactions!$F:$F, Transactions!$G:$G, E${r}, Transactions!$C:$C, ${normYearPrefix}))`,
+    ]);
+  }
+
+  dashboardRows.push(
+    ["", "", "", "", "", "", ""],
+    [
+      "Annual Month-by-Month Trend",
+      "",
+      "",
+      "",
+      "Transactions in Selected Month",
+      "",
+      "",
+    ],
+    [
+      `=IFERROR(QUERY(Transactions!B:G, "select C, count(F), sum(F) where C starts with '"&TRIM(TO_TEXT(E3))&"-' group by C order by C asc label C 'Year-Month', count(F) 'Txns', sum(F) 'Total (MYR)'", 1), "No transactions for this year yet")`,
+      "",
+      "",
+      "",
+      `=IFERROR(QUERY(Transactions!B:I, "select B, D, E, F, G, H, I where C = '"&IF(ISNUMBER(B3),TEXT(B3,"yyyy-mm"),TRIM(TO_TEXT(B3)))&"' order by B desc", 1), "No transactions for selected month yet")`,
+      "",
+      "",
+    ]
+  );
+
+  return dashboardRows;
+}
+
+async function applyDashboardAndLedgerFormatting(
+  accessToken,
+  spreadsheetId,
+  { dashboardSheetId, transactionsSheetId, settingsSheetId }
+) {
+  const tealHeaderBg = { red: 0.06, green: 0.46, blue: 0.43 };
+  const whiteBg = { red: 1, green: 1, blue: 1 };
+  const darkText = { foregroundColor: { red: 0.06, green: 0.09, blue: 0.16 }, bold: false };
+  const whiteText = { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true };
+  const currencyFormat = { type: "NUMBER", pattern: "#,##0.00" };
+
+  const requests = [];
+
+  if (typeof transactionsSheetId === "number") {
+    requests.push(
+      // Header banner on Transactions (Row 1 only)
+      {
+        repeatCell: {
+          range: {
+            sheetId: transactionsSheetId,
+            startRowIndex: 0,
+            endRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: 9,
+          },
+          cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      // Ensure data rows 2..2000 have clean white background & normal dark text
+      {
+        repeatCell: {
+          range: {
+            sheetId: transactionsSheetId,
+            startRowIndex: 1,
+            endRowIndex: 2000,
+            startColumnIndex: 0,
+            endColumnIndex: 9,
+          },
+          cell: { userEnteredFormat: { backgroundColor: whiteBg, textFormat: darkText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      // Amount column number format on Transactions (Column F -> index 5)
+      {
+        repeatCell: {
+          range: {
+            sheetId: transactionsSheetId,
+            startRowIndex: 1,
+            endRowIndex: 2000,
+            startColumnIndex: 5,
+            endColumnIndex: 6,
+          },
+          cell: { userEnteredFormat: { numberFormat: currencyFormat } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      // Force Year-Month column (Column C -> index 2) to Plain Text
+      {
+        repeatCell: {
+          range: {
+            sheetId: transactionsSheetId,
+            startRowIndex: 1,
+            endRowIndex: 2000,
+            startColumnIndex: 2,
+            endColumnIndex: 3,
+          },
+          cell: { userEnteredFormat: { numberFormat: { type: "TEXT" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: transactionsSheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 },
+          properties: { pixelSize: 240 },
+          fields: "pixelSize",
+        },
+      }
+    );
+  }
+
+  if (typeof settingsSheetId === "number") {
+    requests.push({
+      repeatCell: {
+        range: {
+          sheetId: settingsSheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: 0,
+          endColumnIndex: 6,
+        },
+        cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
+        fields: "userEnteredFormat(backgroundColor,textFormat)",
+      },
+    });
+  }
+
+  if (typeof dashboardSheetId === "number") {
+    requests.push(
+      // Dashboard Title banner + Table headers
+      {
+        repeatCell: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 0,
+            endRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: 7,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: tealHeaderBg,
+              textFormat: { ...whiteText, fontSize: 12 },
+            },
+          },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 6,
+            endRowIndex: 7,
+            startColumnIndex: 0,
+            endColumnIndex: 7,
+          },
+          cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      // Format B3 (Selected Month) strictly as TEXT + Dropdown from Settings!$F$2:$F$60
+      {
+        repeatCell: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 1,
+            endColumnIndex: 2,
+          },
+          cell: {
+            userEnteredFormat: {
+              numberFormat: { type: "TEXT" },
+              textFormat: { bold: true },
+            },
+          },
+          fields: "userEnteredFormat(numberFormat,textFormat.bold)",
+        },
+      },
+      {
+        setDataValidation: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 1,
+            endColumnIndex: 2,
+          },
+          rule: {
+            condition: {
+              type: "ONE_OF_RANGE",
+              values: [{ userEnteredValue: "=Settings!$F$2:$F$60" }],
+            },
+            showCustomUi: true,
+            strict: false,
+          },
+        },
+      },
+      // KPI spend cells B5 & F5 currency formatting
+      {
+        repeatCell: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 4,
+            endRowIndex: 5,
+            startColumnIndex: 1,
+            endColumnIndex: 2,
+          },
+          cell: {
+            userEnteredFormat: { numberFormat: currencyFormat, textFormat: { bold: true } },
+          },
+          fields: "userEnteredFormat(numberFormat,textFormat.bold)",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 4,
+            endRowIndex: 5,
+            startColumnIndex: 5,
+            endColumnIndex: 6,
+          },
+          cell: {
+            userEnteredFormat: { numberFormat: currencyFormat, textFormat: { bold: true } },
+          },
+          fields: "userEnteredFormat(numberFormat,textFormat.bold)",
+        },
+      },
+      // Format Dashboard breakdown currency columns
+      {
+        repeatCell: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 7,
+            endRowIndex: 22,
+            startColumnIndex: 1,
+            endColumnIndex: 3,
+          },
+          cell: { userEnteredFormat: { numberFormat: currencyFormat } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: dashboardSheetId,
+            startRowIndex: 7,
+            endRowIndex: 22,
+            startColumnIndex: 5,
+            endColumnIndex: 7,
+          },
+          cell: { userEnteredFormat: { numberFormat: currencyFormat } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      // Comfortable column widths on Dashboard
+      {
+        updateDimensionProperties: {
+          range: { sheetId: dashboardSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 7 },
+          properties: { pixelSize: 175 },
+          fields: "pixelSize",
+        },
+      }
+    );
+  }
+
+  if (requests.length > 0) {
+    await googleApiFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+      accessToken,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requests }),
+      }
+    );
+  }
+}
+
+export async function repairDashboardTab(explicitToken) {
+  const accessToken = explicitToken || getValidAccessToken();
+  if (!accessToken) {
+    throw new Error("Sign in with Google first.");
+  }
+  const settings = loadSettings();
+  if (!settings.spreadsheetId) {
+    throw new Error("No Expense Ledger spreadsheet linked yet.");
+  }
+  const spreadsheetId = settings.spreadsheetId;
+
+  const meta = await googleApiFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}?fields=sheets.properties`,
+    accessToken
+  );
+
+  const byTitle = {};
+  for (const s of meta.sheets || []) {
+    if (s.properties?.title) {
+      byTitle[s.properties.title] = s.properties.sheetId;
+    }
+  }
+
+  let dashboardSheetId = byTitle["Dashboard"];
+  if (typeof dashboardSheetId !== "number") {
+    const added = await googleApiFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}:batchUpdate`,
+      accessToken,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: "Dashboard",
+                  index: 0,
+                  gridProperties: { rowCount: 80, columnCount: 12, frozenRowCount: 1 },
+                },
+              },
+            },
+          ],
+        }),
+      }
+    );
+    dashboardSheetId = added.replies?.[0]?.addSheet?.properties?.sheetId;
+  }
+
+  // Clear old Dashboard formulas before writing fresh whole-column formulas
+  await googleApiFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values/Dashboard!A1:L60:clear`,
+    accessToken,
+    { method: "POST" }
+  );
+
+  const dashboardRows = buildDashboardRows();
+  await googleApiFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values:batchUpdate`,
+    accessToken,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        valueInputOption: "USER_ENTERED",
+        data: [
+          {
+            range: "Settings!F1:F2",
+            values: SETTINGS_MONTH_HELPER_VALUES,
+          },
+          {
+            range: `Dashboard!A1:G${dashboardRows.length}`,
+            values: dashboardRows,
+          },
+        ],
+      }),
+    }
+  );
+
+  await applyDashboardAndLedgerFormatting(accessToken, spreadsheetId, {
+    dashboardSheetId,
+    transactionsSheetId: byTitle["Transactions"],
+    settingsSheetId: byTitle["Settings"],
+  });
+
+  saveSettings({ dashboardSchemaVersion: CURRENT_DASHBOARD_SCHEMA_VERSION });
+  return true;
+}
 
 async function createFormattedLedgerSpreadsheet(
   accessToken,
   { parentFolderId, categories, paymentMethods }
 ) {
-  const now = new Date();
-  const currentYear = String(now.getFullYear());
-  const currentYearMonth = `${currentYear}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
   // 1. Create the 3-sheet spreadsheet via Sheets v4 API
   const createBody = {
     properties: {
@@ -384,9 +836,18 @@ async function createFormattedLedgerSpreadsheet(
     // Non-fatal if root move fails
   }
 
-  // 3. Populate headers, Settings values, and Dashboard formulas
+  // 3. Populate headers, Settings values (+ month dropdown helper), and Dashboard formulas
   const maxSettingRows = Math.max(categories.length, paymentMethods.length, 15);
-  const settingsRows = [["Category", "", "Payment Method", "Group", "Match Hints / Last 4 Digits"]];
+  const settingsRows = [
+    [
+      "Category",
+      "",
+      "Payment Method",
+      "Group",
+      "Match Hints / Last 4 Digits",
+      SETTINGS_MONTH_HELPER_VALUES[0][0],
+    ],
+  ];
   for (let i = 0; i < maxSettingRows; i++) {
     const cat = categories[i] || "";
     const pm = paymentMethods[i];
@@ -396,79 +857,11 @@ async function createFormattedLedgerSpreadsheet(
       pm ? pm.name : "",
       pm ? pm.group || "card" : "",
       pm ? pm.hint || "" : "",
+      i === 0 ? SETTINGS_MONTH_HELPER_VALUES[1][0] : "",
     ]);
   }
 
-  // Build Dashboard dynamic rows (rows 8..22 -> 15 slots from Settings!A2:A16 and C2:C16)
-  const dashboardRows = [
-    ["SPENDSNAP — PERSONAL SPENDING DASHBOARD", "", "", "", "", "", ""],
-    ["", "", "", "", "", "", ""],
-    [
-      "Selected Month (YYYY-MM):",
-      `'${currentYearMonth}`,
-      "",
-      "Selected Year:",
-      currentYear,
-      "",
-      "",
-    ],
-    ["", "", "", "", "", "", ""],
-    [
-      "Month Spend (MYR)",
-      "=IFERROR(SUM(FILTER(Transactions!F2:F, Transactions!C2:C = TO_TEXT(B3))), 0)",
-      "Month Txns",
-      "=IFERROR(ROWS(FILTER(Transactions!F2:F, Transactions!C2:C = TO_TEXT(B3))), 0)",
-      "Full Year Spend (MYR)",
-      "=IFERROR(SUM(FILTER(Transactions!F2:F, LEFT(Transactions!C2:C, 4) = TO_TEXT(E3))), 0)",
-      "",
-    ],
-    ["", "", "", "", "", "", ""],
-    [
-      "Category",
-      "Selected Month (MYR)",
-      "Full Year (MYR)",
-      "",
-      "Payment Method / Card",
-      "Selected Month (MYR)",
-      "Full Year (MYR)",
-    ],
-  ];
-
-  for (let i = 0; i < 15; i++) {
-    const r = 8 + i; // Dashboard row number (1-indexed)
-    const sr = 2 + i; // Settings row number (1-indexed)
-    dashboardRows.push([
-      `=IF(Settings!A${sr}="","",Settings!A${sr})`,
-      `=IF(A${r}="","",IFERROR(SUM(FILTER(Transactions!$F$2:$F, Transactions!$E$2:$E=A${r}, Transactions!$C$2:$C=TO_TEXT($B$3))), 0))`,
-      `=IF(A${r}="","",IFERROR(SUM(FILTER(Transactions!$F$2:$F, Transactions!$E$2:$E=A${r}, LEFT(Transactions!$C$2:$C,4)=TO_TEXT($E$3))), 0))`,
-      "",
-      `=IF(Settings!C${sr}="","",Settings!C${sr})`,
-      `=IF(E${r}="","",IFERROR(SUM(FILTER(Transactions!$F$2:$F, Transactions!$G$2:$G=E${r}, Transactions!$C$2:$C=TO_TEXT($B$3))), 0))`,
-      `=IF(E${r}="","",IFERROR(SUM(FILTER(Transactions!$F$2:$F, Transactions!$G$2:$G=E${r}, LEFT(Transactions!$C$2:$C,4)=TO_TEXT($E$3))), 0))`,
-    ]);
-  }
-
-  dashboardRows.push(
-    ["", "", "", "", "", "", ""],
-    [
-      "Annual Month-by-Month Trend",
-      "",
-      "",
-      "",
-      "Transactions in Selected Month",
-      "",
-      "",
-    ],
-    [
-      `=IFERROR(QUERY(Transactions!B2:G, "select C, count(F), sum(F) where C starts with '"&TO_TEXT(E3)&"-' group by C order by C asc label C 'Year-Month', count(F) 'Txns', sum(F) 'Total (MYR)'", 0), "No transactions for this year yet")`,
-      "",
-      "",
-      "",
-      `=IFERROR(QUERY(Transactions!B2:I, "select B, D, E, F, G, H, I where C = '"&TO_TEXT(B3)&"' order by B desc label B 'Date', D 'Description', E 'Category', F 'Amount (MYR)', G 'Payment Method', H 'Remarks', I 'Receipt'", 0), "No transactions for selected month yet")`,
-      "",
-      "",
-    ]
-  );
+  const dashboardRows = buildDashboardRows();
 
   await googleApiFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
@@ -496,7 +889,7 @@ async function createFormattedLedgerSpreadsheet(
             ],
           },
           {
-            range: `Settings!A1:E${settingsRows.length}`,
+            range: `Settings!A1:F${settingsRows.length}`,
             values: settingsRows,
           },
           {
@@ -509,118 +902,11 @@ async function createFormattedLedgerSpreadsheet(
   );
 
   // 4. Visual styling, number formatting, and Month Dropdown data validation
-  const tealHeaderBg = { red: 0.06, green: 0.46, blue: 0.43 };
-  const whiteText = { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true };
-  const currencyFormat = { type: "NUMBER", pattern: '#,##0.00' };
-
-  await googleApiFetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-    accessToken,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requests: [
-          // Header banner on Transactions
-          {
-            repeatCell: {
-              range: { sheetId: 200, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 },
-              cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
-              fields: "userEnteredFormat(backgroundColor,textFormat)",
-            },
-          },
-          // Amount column number format on Transactions (Column F -> index 5)
-          {
-            repeatCell: {
-              range: { sheetId: 200, startRowIndex: 1, endRowIndex: 2000, startColumnIndex: 5, endColumnIndex: 6 },
-              cell: { userEnteredFormat: { numberFormat: currencyFormat } },
-              fields: "userEnteredFormat.numberFormat",
-            },
-          },
-          // Force Year-Month column (Column C -> index 2) to Plain Text so "2026-11" never turns into a date
-          {
-            repeatCell: {
-              range: { sheetId: 200, startRowIndex: 1, endRowIndex: 2000, startColumnIndex: 2, endColumnIndex: 3 },
-              cell: { userEnteredFormat: { numberFormat: { type: "TEXT" } } },
-              fields: "userEnteredFormat.numberFormat",
-            },
-          },
-          // Header banner on Settings
-          {
-            repeatCell: {
-              range: { sheetId: 300, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 5 },
-              cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
-              fields: "userEnteredFormat(backgroundColor,textFormat)",
-            },
-          },
-          // Dashboard Title banner + Table headers
-          {
-            repeatCell: {
-              range: { sheetId: 100, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 7 },
-              cell: {
-                userEnteredFormat: {
-                  backgroundColor: tealHeaderBg,
-                  textFormat: { ...whiteText, fontSize: 12 },
-                },
-              },
-              fields: "userEnteredFormat(backgroundColor,textFormat)",
-            },
-          },
-          {
-            repeatCell: {
-              range: { sheetId: 100, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 0, endColumnIndex: 7 },
-              cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
-              fields: "userEnteredFormat(backgroundColor,textFormat)",
-            },
-          },
-          // Format Dashboard currency columns
-          {
-            repeatCell: {
-              range: { sheetId: 100, startRowIndex: 7, endRowIndex: 22, startColumnIndex: 1, endColumnIndex: 3 },
-              cell: { userEnteredFormat: { numberFormat: currencyFormat } },
-              fields: "userEnteredFormat.numberFormat",
-            },
-          },
-          {
-            repeatCell: {
-              range: { sheetId: 100, startRowIndex: 7, endRowIndex: 22, startColumnIndex: 5, endColumnIndex: 7 },
-              cell: { userEnteredFormat: { numberFormat: currencyFormat } },
-              fields: "userEnteredFormat.numberFormat",
-            },
-          },
-          // Dropdown validation on Dashboard!B3 from Transactions!C2:C
-          {
-            setDataValidation: {
-              range: { sheetId: 100, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 2 },
-              rule: {
-                condition: {
-                  type: "ONE_OF_RANGE",
-                  values: [{ userEnteredValue: "=Transactions!$C$2:$C$2000" }],
-                },
-                showCustomUi: true,
-                strict: false,
-              },
-            },
-          },
-          // Comfortable column widths on Dashboard & Transactions
-          {
-            updateDimensionProperties: {
-              range: { sheetId: 100, dimension: "COLUMNS", startIndex: 0, endIndex: 7 },
-              properties: { pixelSize: 175 },
-              fields: "pixelSize",
-            },
-          },
-          {
-            updateDimensionProperties: {
-              range: { sheetId: 200, dimension: "COLUMNS", startIndex: 3, endIndex: 4 },
-              properties: { pixelSize: 240 },
-              fields: "pixelSize",
-            },
-          },
-        ],
-      }),
-    }
-  );
+  await applyDashboardAndLedgerFormatting(accessToken, spreadsheetId, {
+    dashboardSheetId: 100,
+    transactionsSheetId: 200,
+    settingsSheetId: 300,
+  });
 
   return { spreadsheetId, spreadsheetUrl };
 }
@@ -743,7 +1029,7 @@ export async function syncTransactionToGoogle(txn) {
   await googleApiFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
       settings.spreadsheetId
-    )}/values/Transactions!A:I:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    )}/values/Transactions!A:I:append?valueInputOption=USER_ENTERED&insertDataOption=OVERWRITE`,
     accessToken,
     {
       method: "POST",

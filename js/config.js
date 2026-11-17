@@ -127,6 +127,7 @@ export function loadSettings() {
     driveReceiptsFolderId: saved.driveReceiptsFolderId || "",
     spreadsheetId: saved.spreadsheetId || "",
     spreadsheetUrl: saved.spreadsheetUrl || "",
+    dashboardSchemaVersion: saved.dashboardSchemaVersion || 1,
   };
 }
 

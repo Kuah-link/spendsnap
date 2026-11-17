@@ -23,6 +23,8 @@ import {
   pushSettingsToSheet,
   pullSettingsFromSheet,
   fetchRecentSheetSummary,
+  repairDashboardTab,
+  CURRENT_DASHBOARD_SCHEMA_VERSION,
 } from "./google-sync.js";
 
 // ---------------- App State ----------------
@@ -92,6 +94,20 @@ function init() {
   refreshPendingCountAndHistory();
 
   bindEvents();
+
+  // Auto-upgrade existing Sheet Dashboard formulas if Google session is currently active
+  if (
+    getValidAccessToken() &&
+    settings.spreadsheetId &&
+    (settings.dashboardSchemaVersion || 1) < CURRENT_DASHBOARD_SCHEMA_VERSION
+  ) {
+    repairDashboardTab()
+      .then(() => {
+        settings = loadSettings();
+        showToast("✓ Upgraded Google Sheet Dashboard formulas!");
+      })
+      .catch(() => {});
+  }
 
   // Periodically update token expiry indicator
   setInterval(refreshHeaderStatus, 30_000);
@@ -972,6 +988,27 @@ function bindEvents() {
     updateSettingsGoogleUi();
     refreshHeaderStatus();
     showToast("Signed out of Google.");
+  });
+
+  el("repairDashboardBtn").addEventListener("click", async () => {
+    const btn = el("repairDashboardBtn");
+    try {
+      if (!getValidAccessToken()) {
+        await requestGoogleSignIn({ interactive: true });
+        refreshHeaderStatus();
+        updateSettingsGoogleUi();
+      }
+      btn.disabled = true;
+      btn.textContent = "Repairing...";
+      await repairDashboardTab();
+      settings = loadSettings();
+      showToast("✓ Sheet Dashboard repaired! Check your Google Sheet.");
+    } catch (err) {
+      showToast(err.message || "Could not repair Sheet Dashboard.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "↻ Repair Sheet Dashboard";
+    }
   });
 
   el("copyColleagueLinkBtn").addEventListener("click", async () => {
