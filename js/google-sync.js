@@ -1,4 +1,4 @@
-// Google Workspace / Google Account OAuth (drive.file) + Drive Monthly Folders + 3-Tab Ledger Sheet
+// Google Workspace / Google Account OAuth (drive.file) + Drive Monthly Folders + 4-Tab Ledger Sheet (with Bukku Export)
 
 import { base64ToBlob, buildReceiptFilename } from "./image-utils.js";
 import { loadSettings, saveSettings, formatTimestampLocal } from "./config.js";
@@ -6,7 +6,7 @@ import { loadSettings, saveSettings, formatTimestampLocal } from "./config.js";
 const SCOPES = "https://www.googleapis.com/auth/drive.file email profile";
 const TOKEN_STORAGE_KEY = "spendsnap_oauth_token_v1";
 const FOLDER_CACHE_KEY = "spendsnap_folder_cache_v1";
-export const CURRENT_DASHBOARD_SCHEMA_VERSION = 3;
+export const CURRENT_DASHBOARD_SCHEMA_VERSION = 4;
 
 let tokenClient = null;
 let pendingTokenResolve = null;
@@ -111,6 +111,7 @@ export function requestGoogleSignIn({ interactive = true } = {}) {
             localStorage.removeItem(FOLDER_CACHE_KEY);
             saveSettings({
               userEmail: profile.email,
+              bukkuEmployeeName: profile.name || "",
               driveRootFolderId: "",
               driveReceiptsFolderId: "",
               spreadsheetId: "",
@@ -118,7 +119,12 @@ export function requestGoogleSignIn({ interactive = true } = {}) {
               dashboardSchemaVersion: 1,
             });
           } else if (profile.email) {
-            saveSettings({ userEmail: profile.email });
+            saveSettings({
+              userEmail: profile.email,
+              ...(!prevSettings.bukkuEmployeeName && profile.name
+                ? { bukkuEmployeeName: profile.name }
+                : {}),
+            });
           }
           await ensureWorkspaceProvisioned(resp.access_token);
           pendingTokenResolve?.(resp.access_token);
@@ -287,6 +293,7 @@ export async function ensureWorkspaceProvisioned(explicitToken) {
         parentFolderId: rootFolderId,
         categories: settings.categories,
         paymentMethods: settings.paymentMethods,
+        bukkuEmployeeName: settings.bukkuEmployeeName || "",
       });
       spreadsheetId = created.spreadsheetId;
       spreadsheetUrl = created.spreadsheetUrl;
@@ -420,10 +427,87 @@ function buildDashboardRows() {
   return dashboardRows;
 }
 
+function buildBukkuExportRows() {
+  const now = new Date();
+  const currentYear = String(now.getFullYear());
+  const currentYearMonth = `${currentYear}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+  // Dynamic whole-column formula mirroring Transactions into Bukku's exact B:K Expense Claim columns:
+  // Col B: Employee | Col C: Reference No. | Col D: Date (DD/MM/YYYY) | Col E: Due Date (DD/MM/YYYY)
+  // Col F: Currency | Col G: Rate | Col H: Account (4-digit 65xx) | Col I: Item Description | Col J: Amount | Col K: Tax
+  const bukkuSpillFormula = [
+    "=ARRAYFORMULA(IFERROR(LET(",
+    'sel, IF(ISNUMBER($C$3), TEXT($C$3, "yyyy-mm"), UPPER(TRIM(TO_TEXT($C$3)))),',
+    'emp, IF($F$3 <> "", $F$3, Settings!$G$2),',
+    'rawYm, IF(ISNUMBER(Transactions!$C:$C), TEXT(Transactions!$C:$C, "yyyy-mm"), TRIM(TO_TEXT(Transactions!$C:$C))),',
+    'isoDt, IF(ISNUMBER(Transactions!$B:$B), TEXT(Transactions!$B:$B, "yyyy-mm-dd"), LEFT(TRIM(TO_TEXT(Transactions!$B:$B)), 10)),',
+    'keep, (Transactions!$B:$B <> "") * (Transactions!$B:$B <> "Date") * IF((sel = "ALL") + (sel = ""), 1, rawYm = sel),',
+    "tbl, SORT(FILTER({isoDt, Transactions!$D:$D, Transactions!$E:$E, Transactions!$F:$F, Transactions!$G:$G, Transactions!$H:$H, ROW(Transactions!$B:$B)}, keep), 1, TRUE, 7, TRUE),",
+    "dtIso, INDEX(tbl, 0, 1),",
+    "descCol, INDEX(tbl, 0, 2),",
+    "catCol, TO_TEXT(INDEX(tbl, 0, 3)),",
+    "amtCol, INDEX(tbl, 0, 4),",
+    "pmCol, INDEX(tbl, 0, 5),",
+    "remCol, INDEX(tbl, 0, 6),",
+    "seqCol, SEQUENCE(ROWS(dtIso), 1, 1, 1),",
+    'empCol, IF(LEN(dtIso) >= 0, emp, ""),',
+    'blankCol, IF(LEN(dtIso) >= 0, "", ""),',
+    'dtBukku, REGEXREPLACE(dtIso, "^([0-9]{4})-([0-9]{2})-([0-9]{2})$", "$3/$2/$1"),',
+    'acctCol, IF(REGEXMATCH(catCol, "^[0-9]{4}"), VALUE(REGEXEXTRACT(catCol, "^[0-9]{4}")), catCol),',
+    "{seqCol, empCol, blankCol, dtBukku, dtBukku, blankCol, blankCol, acctCol, descCol, amtCol, blankCol, blankCol, pmCol, remCol}",
+    '), ""))',
+  ].join(" ");
+
+  return [
+    [
+      "#",
+      "SPENDSNAP — BUKKU EXPENSE CLAIM COPY-PASTE EXPORT",
+      "", "", "", "", "", "", "", "", "", "", "", "",
+    ],
+    [
+      "#",
+      "Copy-Paste Guide: 1) Select Month in C3 & check Employee Name in F3.  2) Highlight B6:K... (all filled rows) -> Copy (Ctrl+C) -> Paste Values into cell B23 of Bukku's purchase-expense-claim-template-my.xlsx.",
+      "", "", "", "", "", "", "", "", "", "", "", "",
+    ],
+    [
+      "#",
+      "Month (YYYY-MM or ALL):",
+      `'${currentYearMonth}`,
+      "",
+      "Employee Name:",
+      "=Settings!G2",
+      "",
+      "Rows:",
+      "=COUNTA(D6:D1000)",
+      "=SUM(J6:J1000)",
+      "(MYR Total)",
+      "", "", "",
+    ],
+    ["#", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    [
+      "#",
+      "Employee (1) *",
+      "Reference No.",
+      "Date (D) *",
+      "Due Date (D) (2)",
+      "Currency (3)",
+      "Rate (4)",
+      "Account (5) *",
+      "Item Description *",
+      "Amount *",
+      "Tax (6)",
+      "",
+      "Payment / Card (Ref)",
+      "Remarks (Ref)",
+    ],
+    [bukkuSpillFormula, "", "", "", "", "", "", "", "", "", "", "", "", ""],
+  ];
+}
+
 async function applyDashboardAndLedgerFormatting(
   accessToken,
   spreadsheetId,
-  { dashboardSheetId, transactionsSheetId, settingsSheetId }
+  { dashboardSheetId, transactionsSheetId, bukkuSheetId, settingsSheetId }
 ) {
   const tealHeaderBg = { red: 0.06, green: 0.46, blue: 0.43 };
   const whiteBg = { red: 1, green: 1, blue: 1 };
@@ -510,7 +594,7 @@ async function applyDashboardAndLedgerFormatting(
             startRowIndex: 0,
             endRowIndex: 1,
             startColumnIndex: 0,
-            endColumnIndex: 6,
+            endColumnIndex: 7,
           },
           cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
           fields: "userEnteredFormat(backgroundColor,textFormat)",
@@ -520,6 +604,13 @@ async function applyDashboardAndLedgerFormatting(
         updateDimensionProperties: {
           range: { sheetId: settingsSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 },
           properties: { pixelSize: 265 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: settingsSheetId, dimension: "COLUMNS", startIndex: 6, endIndex: 7 },
+          properties: { pixelSize: 195 },
           fields: "pixelSize",
         },
       }
@@ -674,6 +765,271 @@ async function applyDashboardAndLedgerFormatting(
     );
   }
 
+  if (typeof bukkuSheetId === "number") {
+    const slateHeaderBg = { red: 0.36, green: 0.43, blue: 0.52 };
+    const softInstructionBg = { red: 0.94, green: 0.99, blue: 0.98 };
+    const editableInputBg = { red: 0.89, green: 0.98, blue: 0.95 };
+    const plainDecimalFmt = { type: "NUMBER", pattern: "0.00" };
+    const integerCodeFmt = { type: "NUMBER", pattern: "0" };
+
+    requests.push(
+      // Row 1 Banner
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 0,
+            endRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: 14,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: tealHeaderBg,
+              textFormat: { ...whiteText, fontSize: 12 },
+            },
+          },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      // Row 2 Copy-Paste Instruction Bar
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 1,
+            endRowIndex: 2,
+            startColumnIndex: 0,
+            endColumnIndex: 14,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: softInstructionBg,
+              textFormat: {
+                foregroundColor: { red: 0.06, green: 0.36, blue: 0.33 },
+                bold: true,
+                fontSize: 9,
+              },
+            },
+          },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      // Row 3 Month Filter C3 (Plain Text + Month Dropdown) & Employee Name F3
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 2,
+            endColumnIndex: 3,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: editableInputBg,
+              numberFormat: { type: "TEXT" },
+              textFormat: { bold: true },
+            },
+          },
+          fields: "userEnteredFormat(backgroundColor,numberFormat,textFormat.bold)",
+        },
+      },
+      {
+        setDataValidation: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 2,
+            endColumnIndex: 3,
+          },
+          rule: {
+            condition: {
+              type: "ONE_OF_RANGE",
+              values: [{ userEnteredValue: "=Settings!$F$2:$F$60" }],
+            },
+            showCustomUi: true,
+            strict: false,
+          },
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 5,
+            endColumnIndex: 6,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: editableInputBg,
+              textFormat: { bold: true },
+            },
+          },
+          fields: "userEnteredFormat(backgroundColor,textFormat.bold)",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 9,
+            endColumnIndex: 10,
+          },
+          cell: {
+            userEnteredFormat: {
+              numberFormat: currencyFormat,
+              textFormat: { bold: true },
+            },
+          },
+          fields: "userEnteredFormat(numberFormat,textFormat.bold)",
+        },
+      },
+      // Row 5 Column Headers: Col A (#) muted, Cols B:K (Exact Bukku Copy Block) Teal, Cols M:N (Ref) muted
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 4,
+            endRowIndex: 5,
+            startColumnIndex: 0,
+            endColumnIndex: 1,
+          },
+          cell: { userEnteredFormat: { backgroundColor: slateHeaderBg, textFormat: whiteText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 4,
+            endRowIndex: 5,
+            startColumnIndex: 1,
+            endColumnIndex: 11,
+          },
+          cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 4,
+            endRowIndex: 5,
+            startColumnIndex: 12,
+            endColumnIndex: 14,
+          },
+          cell: { userEnteredFormat: { backgroundColor: slateHeaderBg, textFormat: whiteText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      // Data Rows 6..1000: Plain Text DD/MM/YYYY on D:E, Integer 65xx on H, Plain 0.00 on J
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 5,
+            endRowIndex: 1000,
+            startColumnIndex: 3,
+            endColumnIndex: 5,
+          },
+          cell: { userEnteredFormat: { numberFormat: { type: "TEXT" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 5,
+            endRowIndex: 1000,
+            startColumnIndex: 7,
+            endColumnIndex: 8,
+          },
+          cell: { userEnteredFormat: { numberFormat: integerCodeFmt } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: bukkuSheetId,
+            startRowIndex: 5,
+            endRowIndex: 1000,
+            startColumnIndex: 9,
+            endColumnIndex: 10,
+          },
+          cell: { userEnteredFormat: { numberFormat: plainDecimalFmt } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      // Column widths matching Bukku template layout
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 },
+          properties: { pixelSize: 44 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 },
+          properties: { pixelSize: 170 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 5 },
+          properties: { pixelSize: 120 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 5, endIndex: 8 },
+          properties: { pixelSize: 100 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 8, endIndex: 9 },
+          properties: { pixelSize: 265 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 9, endIndex: 11 },
+          properties: { pixelSize: 105 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 11, endIndex: 12 },
+          properties: { pixelSize: 24 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: bukkuSheetId, dimension: "COLUMNS", startIndex: 12, endIndex: 14 },
+          properties: { pixelSize: 185 },
+          fields: "pixelSize",
+        },
+      }
+    );
+  }
+
   if (requests.length > 0) {
     await googleApiFetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
@@ -706,15 +1062,51 @@ export async function repairDashboardTab(explicitToken) {
   );
 
   const byTitle = {};
+  const propsByTitle = {};
   for (const s of meta.sheets || []) {
     if (s.properties?.title) {
       byTitle[s.properties.title] = s.properties.sheetId;
+      propsByTitle[s.properties.title] = s.properties;
     }
   }
 
-  let dashboardSheetId = byTitle["Dashboard"];
-  if (typeof dashboardSheetId !== "number") {
-    const added = await googleApiFetch(
+  const structRequests = [];
+  if (typeof byTitle["Dashboard"] !== "number") {
+    structRequests.push({
+      addSheet: {
+        properties: {
+          title: "Dashboard",
+          index: 0,
+          gridProperties: { rowCount: 80, columnCount: 12, frozenRowCount: 1 },
+        },
+      },
+    });
+  }
+  if (typeof byTitle["Bukku Export"] !== "number") {
+    structRequests.push({
+      addSheet: {
+        properties: {
+          title: "Bukku Export",
+          index: 2,
+          gridProperties: { rowCount: 1000, columnCount: 15, frozenRowCount: 5 },
+        },
+      },
+    });
+  }
+
+  const settingsCols = propsByTitle["Settings"]?.gridProperties?.columnCount || 0;
+  if (typeof byTitle["Settings"] === "number" && settingsCols < 8) {
+    structRequests.push({
+      appendDimension: {
+        sheetId: byTitle["Settings"],
+        dimension: "COLUMNS",
+        length: 8 - settingsCols,
+      },
+    });
+  }
+
+  if (structRequests.length > 0) {
+    const structResp = await googleApiFetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
         spreadsheetId
       )}:batchUpdate`,
@@ -722,44 +1114,69 @@ export async function repairDashboardTab(explicitToken) {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: "Dashboard",
-                  index: 0,
-                  gridProperties: { rowCount: 80, columnCount: 12, frozenRowCount: 1 },
-                },
-              },
-            },
-          ],
-        }),
+        body: JSON.stringify({ requests: structRequests }),
       }
     );
-    dashboardSheetId = added.replies?.[0]?.addSheet?.properties?.sheetId;
+    for (const rep of structResp.replies || []) {
+      const addedProps = rep?.addSheet?.properties;
+      if (addedProps?.title) {
+        byTitle[addedProps.title] = addedProps.sheetId;
+      }
+    }
   }
 
-  // If upgrading from an older schema (< v3), push the migrated 65xx Expense Codes to Settings!A:E
+  const dashboardSheetId = byTitle["Dashboard"];
+  const bukkuSheetId = byTitle["Bukku Export"];
+
+  // If upgrading from an older schema, ensure Settings!A:E has current Expense Codes / Cards
   if ((settings.dashboardSchemaVersion || 1) < CURRENT_DASHBOARD_SCHEMA_VERSION) {
     await writeSettingsColumns(
       accessToken,
       spreadsheetId,
       settings.categories,
-      settings.paymentMethods
+      settings.paymentMethods,
+      settings.bukkuEmployeeName
     );
   }
 
-  // Clear old Dashboard formulas before writing fresh whole-column formulas
+  // Clear old Dashboard & Bukku Export formulas before writing fresh whole-column formulas
   await googleApiFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
       spreadsheetId
-    )}/values/Dashboard!A1:L60:clear`,
+    )}/values:batchClear`,
     accessToken,
-    { method: "POST" }
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ranges: ["Dashboard!A1:L60", "'Bukku Export'!A1:O30"],
+      }),
+    }
   );
 
   const dashboardRows = buildDashboardRows();
+  const bukkuRows = buildBukkuExportRows();
+  const batchValueData = [
+    {
+      range: "Settings!F1:F2",
+      values: SETTINGS_MONTH_HELPER_VALUES,
+    },
+    {
+      range: settings.bukkuEmployeeName ? "Settings!G1:G2" : "Settings!G1:G1",
+      values: settings.bukkuEmployeeName
+        ? [["Bukku Employee Name"], [settings.bukkuEmployeeName]]
+        : [["Bukku Employee Name"]],
+    },
+    {
+      range: `Dashboard!A1:G${dashboardRows.length}`,
+      values: dashboardRows,
+    },
+    {
+      range: `'Bukku Export'!A1:N${bukkuRows.length}`,
+      values: bukkuRows,
+    },
+  ];
+
   await googleApiFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
       spreadsheetId
@@ -770,16 +1187,7 @@ export async function repairDashboardTab(explicitToken) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         valueInputOption: "USER_ENTERED",
-        data: [
-          {
-            range: "Settings!F1:F2",
-            values: SETTINGS_MONTH_HELPER_VALUES,
-          },
-          {
-            range: `Dashboard!A1:G${dashboardRows.length}`,
-            values: dashboardRows,
-          },
-        ],
+        data: batchValueData,
       }),
     }
   );
@@ -787,6 +1195,7 @@ export async function repairDashboardTab(explicitToken) {
   await applyDashboardAndLedgerFormatting(accessToken, spreadsheetId, {
     dashboardSheetId,
     transactionsSheetId: byTitle["Transactions"],
+    bukkuSheetId,
     settingsSheetId: byTitle["Settings"],
   });
 
@@ -796,9 +1205,9 @@ export async function repairDashboardTab(explicitToken) {
 
 async function createFormattedLedgerSpreadsheet(
   accessToken,
-  { parentFolderId, categories, paymentMethods }
+  { parentFolderId, categories, paymentMethods, bukkuEmployeeName = "" }
 ) {
-  // 1. Create the 3-sheet spreadsheet via Sheets v4 API
+  // 1. Create the 4-sheet spreadsheet via Sheets v4 API
   const createBody = {
     properties: {
       title: "Expense Ledger",
@@ -821,9 +1230,16 @@ async function createFormattedLedgerSpreadsheet(
       },
       {
         properties: {
+          sheetId: 250,
+          title: "Bukku Export",
+          gridProperties: { rowCount: 1000, columnCount: 15, frozenRowCount: 5 },
+        },
+      },
+      {
+        properties: {
           sheetId: 300,
           title: "Settings",
-          gridProperties: { rowCount: 60, columnCount: 6, frozenRowCount: 1 },
+          gridProperties: { rowCount: 60, columnCount: 8, frozenRowCount: 1 },
         },
       },
     ],
@@ -862,7 +1278,7 @@ async function createFormattedLedgerSpreadsheet(
     // Non-fatal if root move fails
   }
 
-  // 3. Populate headers, Settings values (+ month dropdown helper), and Dashboard formulas
+  // 3. Populate headers, Settings values (+ month helper & Bukku employee), Dashboard, and Bukku Export
   const maxSettingRows = Math.max(categories.length, paymentMethods.length, 15);
   const settingsRows = [
     [
@@ -872,6 +1288,7 @@ async function createFormattedLedgerSpreadsheet(
       "Group",
       "Match Hints / Last 4 Digits",
       SETTINGS_MONTH_HELPER_VALUES[0][0],
+      "Bukku Employee Name",
     ],
   ];
   for (let i = 0; i < maxSettingRows; i++) {
@@ -884,10 +1301,12 @@ async function createFormattedLedgerSpreadsheet(
       pm ? pm.group || "card" : "",
       pm ? pm.hint || "" : "",
       i === 0 ? SETTINGS_MONTH_HELPER_VALUES[1][0] : "",
+      i === 0 ? bukkuEmployeeName || "" : "",
     ]);
   }
 
   const dashboardRows = buildDashboardRows();
+  const bukkuRows = buildBukkuExportRows();
 
   await googleApiFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
@@ -915,12 +1334,16 @@ async function createFormattedLedgerSpreadsheet(
             ],
           },
           {
-            range: `Settings!A1:F${settingsRows.length}`,
+            range: `Settings!A1:G${settingsRows.length}`,
             values: settingsRows,
           },
           {
             range: `Dashboard!A1:G${dashboardRows.length}`,
             values: dashboardRows,
+          },
+          {
+            range: `'Bukku Export'!A1:N${bukkuRows.length}`,
+            values: bukkuRows,
           },
         ],
       }),
@@ -931,6 +1354,7 @@ async function createFormattedLedgerSpreadsheet(
   await applyDashboardAndLedgerFormatting(accessToken, spreadsheetId, {
     dashboardSheetId: 100,
     transactionsSheetId: 200,
+    bukkuSheetId: 250,
     settingsSheetId: 300,
   });
 
@@ -1163,7 +1587,13 @@ export async function syncBatchTransactionsToGoogle({ txns, sharedReceipt }) {
 
 // ---------------- Two-Way Settings Sync with Sheet ----------------
 
-async function writeSettingsColumns(accessToken, spreadsheetId, categories, paymentMethods) {
+async function writeSettingsColumns(
+  accessToken,
+  spreadsheetId,
+  categories,
+  paymentMethods,
+  bukkuEmployeeName
+) {
   const maxRows = Math.max(categories.length, paymentMethods.length, 20);
   const values = [["Category", "", "Payment Method", "Group", "Match Hints / Last 4 Digits"]];
   for (let i = 0; i < maxRows; i++) {
@@ -1189,6 +1619,26 @@ async function writeSettingsColumns(accessToken, spreadsheetId, categories, paym
       body: JSON.stringify({ values }),
     }
   );
+
+  if (typeof bukkuEmployeeName === "string") {
+    try {
+      await googleApiFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+          spreadsheetId
+        )}/values/Settings!G1:G2?valueInputOption=USER_ENTERED`,
+        accessToken,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            values: [["Bukku Employee Name"], [bukkuEmployeeName]],
+          }),
+        }
+      );
+    } catch {
+      // Non-fatal if custom sheet grid has < 7 columns
+    }
+  }
 }
 
 export async function pushSettingsToSheet() {
@@ -1199,7 +1649,8 @@ export async function pushSettingsToSheet() {
     accessToken,
     settings.spreadsheetId,
     settings.categories,
-    settings.paymentMethods
+    settings.paymentMethods,
+    settings.bukkuEmployeeName || ""
   );
   return true;
 }
@@ -1209,12 +1660,22 @@ export async function pullSettingsFromSheet(explicitToken) {
   const settings = loadSettings();
   if (!accessToken || !settings.spreadsheetId) return null;
 
-  const data = await googleApiFetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
-      settings.spreadsheetId
-    )}/values/Settings!A2:E50`,
-    accessToken
-  );
+  let data;
+  try {
+    data = await googleApiFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        settings.spreadsheetId
+      )}/values/Settings!A2:G50`,
+      accessToken
+    );
+  } catch {
+    data = await googleApiFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        settings.spreadsheetId
+      )}/values/Settings!A2:E50`,
+      accessToken
+    );
+  }
 
   const rows = data.values || [];
   const categories = [];
@@ -1231,9 +1692,11 @@ export async function pullSettingsFromSheet(explicitToken) {
     }
   }
 
+  const sheetEmployeeName = String(rows[0]?.[6] || "").trim();
   const patch = {};
   if (categories.length > 0) patch.categories = categories;
   if (paymentMethods.length > 0) patch.paymentMethods = paymentMethods;
+  if (sheetEmployeeName) patch.bukkuEmployeeName = sheetEmployeeName;
   if (Object.keys(patch).length > 0) {
     return saveSettings(patch);
   }

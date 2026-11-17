@@ -371,14 +371,23 @@
           <select id="geminiModelSelect" class="text-input"></select>
         </div>
 
-        <!-- 2. Google Workspace Sync -->
+        <!-- 2. Google Workspace Sync & Bukku Export -->
         <div class="settings-block">
-          <h3>2. Google Workspace Sheets &amp; Drive</h3>
+          <h3>2. Google Sheets &amp; Bukku Export</h3>
           <p class="settings-help">
             Each signed-in user gets their own private <code>Expense Tracker</code> Drive folder
-            (<code>Receipts/YYYY/YYYY-MM</code>) and 3-tab <code>Expense Ledger</code> Sheet.
+            (<code>Receipts/YYYY/YYYY-MM</code>) and 4-tab <code>Expense Ledger</code> Sheet
+            (including a ready-to-copy <code>Bukku Export</code> tab).
           </p>
-          <label class="field-label" for="googleClientIdInput">Google OAuth Client ID</label>
+          <label class="field-label" for="bukkuEmployeeInput">Bukku Employee Name <span class="optional-tag">(Contact's legal name in Bukku)</span></label>
+          <input
+            type="text"
+            id="bukkuEmployeeInput"
+            placeholder="Exact Contact legal name in Bukku"
+            class="text-input"
+          />
+
+          <label class="field-label mt-sm" for="googleClientIdInput">Google OAuth Client ID</label>
           <input
             type="text"
             id="googleClientIdInput"
@@ -394,7 +403,7 @@
               Sign Out
             </button>
             <button type="button" id="repairDashboardBtn" class="btn-outline-sm">
-              ↻ Repair Sheet Dashboard
+              ↻ Upgrade / Repair Sheet Tabs
             </button>
             <button type="button" id="copyColleagueLinkBtn" class="btn-outline-sm">
               Copy Colleague Invite Link

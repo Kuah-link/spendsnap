@@ -157,6 +157,7 @@ export function loadSettings() {
         ? saved.paymentMethods
         : DEFAULT_PAYMENT_METHODS.map((m) => ({ ...m })),
     defaultPaymentMethod: saved.defaultPaymentMethod || "QR / eWallet",
+    bukkuEmployeeName: saved.bukkuEmployeeName || "",
     userEmail: saved.userEmail || "",
     driveRootFolderId: saved.driveRootFolderId || "",
     driveReceiptsFolderId: saved.driveReceiptsFolderId || "",

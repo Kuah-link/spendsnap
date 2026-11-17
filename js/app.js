@@ -126,7 +126,7 @@ function init() {
     repairDashboardTab()
       .then(() => {
         settings = loadSettings();
-        showToast("✓ Upgraded Google Sheet Expense Codes & Dashboard!");
+        showToast("✓ Added Bukku Export tab & upgraded Google Sheet!");
       })
       .catch(() => {});
   }
@@ -1280,6 +1280,7 @@ function openSettingsModal() {
   settings = loadSettings();
   el("geminiKeyInput").value = settings.geminiApiKey || "";
   el("geminiModelSelect").value = settings.geminiModel || "gemini-4-hydrogen";
+  el("bukkuEmployeeInput").value = settings.bukkuEmployeeName || "";
   el("googleClientIdInput").value = settings.googleClientId || "";
   el("categoriesTextarea").value = settings.categories.join("\n");
   el("paymentMethodsTextarea").value = formatPaymentMethodsText(
@@ -1346,6 +1347,7 @@ async function saveSettingsFromModal() {
   settings = saveSettings({
     geminiApiKey: el("geminiKeyInput").value.trim(),
     geminiModel: el("geminiModelSelect").value,
+    bukkuEmployeeName: el("bukkuEmployeeInput").value.trim(),
     googleClientId: el("googleClientIdInput").value.trim(),
     categories: cats.length ? cats : [...DEFAULT_CATEGORIES],
     paymentMethods: methods.length ? methods : DEFAULT_PAYMENT_METHODS,
@@ -1551,10 +1553,16 @@ function bindEvents() {
       el("googleClientIdInput").focus();
       return;
     }
-    saveSettings({ googleClientId: cid });
+    saveSettings({
+      googleClientId: cid,
+      ...(el("bukkuEmployeeInput").value.trim()
+        ? { bukkuEmployeeName: el("bukkuEmployeeInput").value.trim() }
+        : {}),
+    });
     try {
       await requestGoogleSignIn({ interactive: true });
       settings = loadSettings();
+      el("bukkuEmployeeInput").value = settings.bukkuEmployeeName || "";
       el("categoriesTextarea").value = settings.categories.join("\n");
       el("paymentMethodsTextarea").value = formatPaymentMethodsText(
         settings.paymentMethods
@@ -1581,21 +1589,25 @@ function bindEvents() {
   el("repairDashboardBtn").addEventListener("click", async () => {
     const btn = el("repairDashboardBtn");
     try {
+      if (el("bukkuEmployeeInput").value.trim()) {
+        saveSettings({ bukkuEmployeeName: el("bukkuEmployeeInput").value.trim() });
+      }
       if (!getValidAccessToken()) {
         await requestGoogleSignIn({ interactive: true });
         refreshHeaderStatus();
         updateSettingsGoogleUi();
       }
       btn.disabled = true;
-      btn.textContent = "Repairing...";
+      btn.textContent = "Upgrading...";
       await repairDashboardTab();
       settings = loadSettings();
-      showToast("✓ Sheet Dashboard repaired! Check your Google Sheet.");
+      el("bukkuEmployeeInput").value = settings.bukkuEmployeeName || "";
+      showToast("✓ Upgraded Dashboard & Bukku Export tabs in Google Sheet!");
     } catch (err) {
-      showToast(err.message || "Could not repair Sheet Dashboard.");
+      showToast(err.message || "Could not upgrade Sheet tabs.");
     } finally {
       btn.disabled = false;
-      btn.textContent = "↻ Repair Sheet Dashboard";
+      btn.textContent = "↻ Upgrade / Repair Sheet Tabs";
     }
   });
 
@@ -1644,6 +1656,7 @@ function bindEvents() {
       const updated = await pullSettingsFromSheet();
       if (updated) {
         settings = updated;
+        el("bukkuEmployeeInput").value = settings.bukkuEmployeeName || "";
         el("categoriesTextarea").value = settings.categories.join("\n");
         el("paymentMethodsTextarea").value = formatPaymentMethodsText(
           settings.paymentMethods
