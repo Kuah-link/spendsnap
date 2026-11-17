@@ -53,7 +53,6 @@ const el = (id) => document.getElementById(id);
 
 const googleStatusBtn = el("googleStatusBtn");
 const googleStatusText = el("googleStatusText");
-const openSheetHeaderBtn = el("openSheetHeaderBtn");
 const monthFolderHint = el("monthFolderHint");
 const pendingBadge = el("pendingBadge");
 
@@ -242,22 +241,19 @@ function refreshHeaderStatus() {
   } else if (status.state === "expired") {
     googleStatusBtn.classList.add("status-expired");
     googleStatusText.textContent = "Tap to Reconnect";
-  } else if (status.state === "signed_out") {
-    googleStatusBtn.classList.add("status-unconfigured");
-    googleStatusText.textContent = "Sign In Google";
   } else {
     googleStatusBtn.classList.add("status-unconfigured");
-    googleStatusText.textContent = "Setup Sync";
+    googleStatusText.textContent = "Setup & Sign In";
   }
 
   if (settings.spreadsheetUrl) {
-    openSheetHeaderBtn.href = settings.spreadsheetUrl;
-    openSheetHeaderBtn.classList.remove("hidden");
     el("openFullSheetBtn").href = settings.spreadsheetUrl;
     el("openFullSheetBtn").classList.remove("hidden");
+    el("openSheetSettingsBtn").href = settings.spreadsheetUrl;
+    el("openSheetSettingsBtn").classList.remove("hidden");
   } else {
-    openSheetHeaderBtn.classList.add("hidden");
     el("openFullSheetBtn").classList.add("hidden");
+    el("openSheetSettingsBtn").classList.add("hidden");
   }
 
   saveExpenseBtn.textContent = getValidAccessToken()
@@ -1476,37 +1472,29 @@ function bindEvents() {
 
   expenseForm.addEventListener("submit", handleFormSubmit);
 
-  // Header Google Pill
-  googleStatusBtn.addEventListener("click", async () => {
+  // Unified Header Status & Settings Pill
+  googleStatusBtn.addEventListener("click", async (e) => {
     const status = getTokenStatus();
-    if (status.state === "unconfigured") {
-      openSettingsModal();
-      return;
-    }
-    if (status.state === "connected") {
+    if (status.state !== "expired" || e.target.closest(".status-gear")) {
       openSettingsModal();
       return;
     }
     try {
       googleStatusText.textContent = "Connecting...";
-      await requestGoogleSignIn({ interactive: status.state !== "expired" });
+      await requestGoogleSignIn({ interactive: false });
       refreshHeaderStatus();
       showToast("Google Workspace connected!");
       await syncAllPendingTransactions();
-    } catch (err) {
+    } catch {
       // Fallback to interactive prompt if silent refresh was blocked
-      if (status.state === "expired") {
-        try {
-          await requestGoogleSignIn({ interactive: true });
-          refreshHeaderStatus();
-          showToast("Reconnected to Google!");
-          await syncAllPendingTransactions();
-          return;
-        } catch (err2) {
-          showToast(err2.message);
-        }
-      } else {
-        showToast(err.message);
+      try {
+        await requestGoogleSignIn({ interactive: true });
+        refreshHeaderStatus();
+        showToast("Reconnected to Google!");
+        await syncAllPendingTransactions();
+        return;
+      } catch (err2) {
+        showToast(err2.message);
       }
       refreshHeaderStatus();
     }
@@ -1535,7 +1523,7 @@ function bindEvents() {
   });
 
   // Settings Modal
-  el("openSettingsBtn").addEventListener("click", openSettingsModal);
+  el("footerSettingsBtn").addEventListener("click", openSettingsModal);
   el("closeSettingsBtn").addEventListener("click", () =>
     el("settingsModal").classList.add("hidden")
   );
