@@ -6,7 +6,7 @@ import { loadSettings, saveSettings, formatTimestampLocal } from "./config.js";
 const SCOPES = "https://www.googleapis.com/auth/drive.file email profile";
 const TOKEN_STORAGE_KEY = "spendsnap_oauth_token_v1";
 const FOLDER_CACHE_KEY = "spendsnap_folder_cache_v1";
-export const CURRENT_DASHBOARD_SCHEMA_VERSION = 4;
+export const CURRENT_DASHBOARD_SCHEMA_VERSION = 5;
 
 let tokenClient = null;
 let pendingTokenResolve = null;
@@ -533,7 +533,9 @@ async function applyDashboardAndLedgerFormatting(
           fields: "userEnteredFormat(backgroundColor,textFormat)",
         },
       },
-      // Ensure data rows 2..2000 have clean white background & normal dark text
+      // Ensure data rows 2..2000 on Columns A..H have clean white background & normal dark text.
+      // Never apply textFormat overrides to Column I (index 8, Receipt Link) so =HYPERLINK(...)
+      // retains Google Sheets' native blue underline & mouse-hover preview popup.
       {
         repeatCell: {
           range: {
@@ -541,9 +543,23 @@ async function applyDashboardAndLedgerFormatting(
             startRowIndex: 1,
             endRowIndex: 2000,
             startColumnIndex: 0,
-            endColumnIndex: 9,
+            endColumnIndex: 8,
           },
           cell: { userEnteredFormat: { backgroundColor: whiteBg, textFormat: darkText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      },
+      // Clear any previous textFormat override on Column I (Receipt Link) while keeping white background
+      {
+        repeatCell: {
+          range: {
+            sheetId: transactionsSheetId,
+            startRowIndex: 1,
+            endRowIndex: 2000,
+            startColumnIndex: 8,
+            endColumnIndex: 9,
+          },
+          cell: { userEnteredFormat: { backgroundColor: whiteBg } },
           fields: "userEnteredFormat(backgroundColor,textFormat)",
         },
       },
@@ -579,6 +595,13 @@ async function applyDashboardAndLedgerFormatting(
         updateDimensionProperties: {
           range: { sheetId: transactionsSheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 5 },
           properties: { pixelSize: 245 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: transactionsSheetId, dimension: "COLUMNS", startIndex: 8, endIndex: 9 },
+          properties: { pixelSize: 120 },
           fields: "pixelSize",
         },
       }
@@ -1128,8 +1151,8 @@ export async function repairDashboardTab(explicitToken) {
   const dashboardSheetId = byTitle["Dashboard"];
   const bukkuSheetId = byTitle["Bukku Export"];
 
-  // If upgrading from an older schema, ensure Settings!A:E has current Expense Codes / Cards
-  if ((settings.dashboardSchemaVersion || 1) < CURRENT_DASHBOARD_SCHEMA_VERSION) {
+  // If upgrading from pre-v3 schema, ensure Settings!A:E has current Expense Codes / Cards
+  if ((settings.dashboardSchemaVersion || 1) < 3) {
     await writeSettingsColumns(
       accessToken,
       spreadsheetId,
@@ -1199,8 +1222,57 @@ export async function repairDashboardTab(explicitToken) {
     settingsSheetId: byTitle["Settings"],
   });
 
+  try {
+    await restoreTransactionHyperlinks(accessToken, spreadsheetId);
+  } catch {
+    // Non-fatal if Transactions tab has custom layout
+  }
+
   saveSettings({ dashboardSchemaVersion: CURRENT_DASHBOARD_SCHEMA_VERSION });
   return true;
+}
+
+async function restoreTransactionHyperlinks(accessToken, spreadsheetId) {
+  const data = await googleApiFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values/Transactions!I2:I2000?valueRenderOption=FORMULA`,
+    accessToken
+  );
+  const rows = data.values || [];
+  if (rows.length === 0) return;
+
+  const hasAnyLink = rows.some((r) => String(r?.[0] || "").trim() !== "");
+  if (!hasAnyLink) return;
+
+  const normalized = rows.map((r) => [r?.[0] ?? ""]);
+  const range = `Transactions!I2:I${1 + normalized.length}`;
+
+  // Clear values first so Google Sheets freshly re-evaluates =HYPERLINK(...) on the
+  // clean unformatted cells and re-attaches native blue underline + mouse-hover preview
+  await googleApiFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values/${encodeURIComponent(range)}:clear`,
+    accessToken,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }
+  );
+
+  await googleApiFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+    accessToken,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: normalized }),
+    }
+  );
 }
 
 async function createFormattedLedgerSpreadsheet(

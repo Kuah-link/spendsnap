@@ -125,7 +125,7 @@ function init() {
     repairDashboardTab()
       .then(() => {
         settings = loadSettings();
-        showToast("✓ Added Bukku Export tab & upgraded Google Sheet!");
+        showToast("✓ Upgraded Google Sheet tabs & restored receipt links!");
       })
       .catch(() => {});
   }
@@ -1590,7 +1590,7 @@ function bindEvents() {
       await repairDashboardTab();
       settings = loadSettings();
       el("bukkuEmployeeInput").value = settings.bukkuEmployeeName || "";
-      showToast("✓ Upgraded Dashboard & Bukku Export tabs in Google Sheet!");
+      showToast("✓ Repaired Sheet tabs & receipt hyperlinks!");
     } catch (err) {
       showToast(err.message || "Could not upgrade Sheet tabs.");
     } finally {
