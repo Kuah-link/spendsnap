@@ -166,9 +166,39 @@ function switchMainTab(target) {
 }
 
 function registerServiceWorker() {
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  }
+  if (!("serviceWorker" in navigator)) return;
+
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let reloadingForSw = false;
+
+  navigator.serviceWorker
+    .register("./sw.js", { updateViaCache: "none" })
+    .then((reg) => {
+      // Check for updates whenever the user brings the home-screen PWA back to foreground
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          reg.update().catch(() => {});
+        }
+      });
+    })
+    .catch(() => {});
+
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloadingForSw) return;
+    const isIdle =
+      !currentReceipt &&
+      !currentBatchReceipt &&
+      !amountInput.value &&
+      !descriptionInput.value &&
+      batchItems.length === 0 &&
+      el("settingsModal").classList.contains("hidden");
+    if (isIdle) {
+      reloadingForSw = true;
+      window.location.reload();
+    } else {
+      showToast("✨ App update downloaded — will apply on next reopen.");
+    }
+  });
 }
 
 function setupInstallBanner() {
@@ -441,6 +471,9 @@ async function runGeminiAutoFill() {
       categories: settings.categories,
       paymentMethods: settings.paymentMethods,
       baseCurrency: settings.baseCurrency,
+      onStatus: (msg) => {
+        geminiStatusLine.textContent = msg;
+      },
     });
 
     if (result.date) {
@@ -475,7 +508,8 @@ async function runGeminiAutoFill() {
     }
 
     const cardTag = result.cardLast4 ? ` (Card *${result.cardLast4})` : "";
-    geminiStatusLine.textContent = `✓ Auto-filled by Gemini${cardTag} — verify & save`;
+    const fallbackTag = result.switchedModel ? ` [${result.usedModel}]` : "";
+    geminiStatusLine.textContent = `✓ Auto-filled by Gemini${cardTag}${fallbackTag} — verify & save`;
     showToast("Receipt scanned! Check details & tap Save.");
   } catch (err) {
     geminiStatusLine.textContent = "Scan incomplete — fill manually or tap Re-scan";
@@ -555,6 +589,9 @@ async function runBatchGeminiScan() {
       categories: settings.categories,
       paymentMethods: settings.paymentMethods,
       baseCurrency: settings.baseCurrency,
+      onStatus: (msg) => {
+        batchStatusLine.textContent = msg;
+      },
     });
 
     if (!extracted || extracted.length === 0) {

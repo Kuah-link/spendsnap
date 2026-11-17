@@ -93,11 +93,19 @@ export const CURRENCIES = [
 export const GEMINI_MODELS = [
   {
     id: "gemini-4-hydrogen",
-    label: "Gemini 4 Hydrogen (Recommended — Fast & Accurate)",
+    label: "Gemini 4 Hydrogen (Recommended — Fast + Auto-Fallback)",
   },
   {
     id: "gemini-3.5-flash-lite",
-    label: "Gemini 3.5 Flash-Lite (Ultra-Fast & Lowest Cost)",
+    label: "Gemini 3.5 Flash-Lite (Lowest Cost + Auto-Fallback)",
+  },
+  {
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite (Ultra-Light + Auto-Fallback)",
+  },
+  {
+    id: "gemini-4-argon",
+    label: "Gemini 4 Argon (Deep Precision + Auto-Fallback)",
   },
 ];
 
@@ -107,7 +115,7 @@ export const EMBEDDED_GOOGLE_CLIENT_ID =
 
 // App release tag & optional write-only Apps Script webhook for active-tester roster
 // (sends ONLY name, email, device & appVersion — never financial entries, receipts, or keys)
-export const APP_VERSION = "spendsnap-v10";
+export const APP_VERSION = "spendsnap-v11";
 export const EMBEDDED_USAGE_WEBHOOK_URL =
   "https://script.google.com/macros/s/AKfycbxD2Fn88SY8MrWepoKiwt5PfT3jxdy5iO0pKpsdJLRl46JGT_ELnkZUgF6UkkWVpd0D/exec";
 

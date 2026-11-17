@@ -1,9 +1,60 @@
 // Gemini Interactions API (v1) multimodal receipt, screenshot, and A4 multi-receipt parser
-// Uses current models: gemini-4-hydrogen (default) or gemini-3.5-flash-lite
+// Uses current models (gemini-4-hydrogen, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-4-argon)
+// with automatic multi-model failover on HTTP 503 (high demand) / 429 (rate limit) spikes.
 
 import { todayISO } from "./config.js";
 
 const INTERACTIONS_ENDPOINT = "https://generativelanguage.googleapis.com/v1/interactions";
+const REQUEST_TIMEOUT_MS = 38_000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildModelFallbackChain(requestedModel, { isBatch = false } = {}) {
+  let primary = String(requestedModel || "gemini-4-hydrogen").trim();
+  // Automatically upgrade any deprecated legacy model IDs
+  if (!primary || /^gemini-(1\.|2\.)/i.test(primary)) {
+    primary = "gemini-4-hydrogen";
+  }
+  const pool = isBatch
+    ? [
+        primary,
+        "gemini-4-hydrogen",
+        "gemini-4-argon",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+      ]
+    : [
+        primary,
+        "gemini-4-hydrogen",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-4-argon",
+      ];
+  return [...new Set(pool)];
+}
+
+function getGenerationConfigForModel(modelId, { isBatch = false } = {}) {
+  const m = String(modelId || "");
+  if (m.startsWith("gemini-4-")) {
+    // Gemini 4 Hydrogen defaults to "high"; "low" (single) / "medium" (A4 batch) cuts latency & quota 3x
+    return { thinking_level: isBatch ? "medium" : "low" };
+  }
+  if (m.includes("3.5-flash-lite") || m.includes("3.1-flash-lite")) {
+    return { thinking_level: isBatch ? "low" : "minimal" };
+  }
+  return undefined;
+}
+
+function isRetryableOrOverloadedError(status, detail = "") {
+  // 503 = high demand spike, 429 = rate/quota limit, 5xx = server transient, 404 = model unavailable on tier
+  if ([404, 408, 429, 500, 502, 503, 504].includes(status)) return true;
+  if (/high demand|overloaded|unavailable|exhausted|try again|timeout/i.test(detail)) {
+    return true;
+  }
+  return false;
+}
 
 const EXPENSE_CODE_GUIDE = `   - "6519 - Travel Expense": Petrol stations (Shell, Petron, Petronas, Caltex, BHP), car park tickets & mall/building parking (Menara Etiqa, Pavilion, 1Utama, Autopay), Touch 'n Go tolls & parking, flights, hotels & business trip accommodation.
    - "6518 - Meal & Entertainment": Restaurants, cafes, kopitiam, bakeries, food & beverage, client dining, food delivery.
@@ -102,7 +153,98 @@ function normalizeParsedItem(parsed, { categoryList, paymentMethods, baseCurrenc
   };
 }
 
-async function callGeminiInteractions({ apiKey, model, prompt, receipt, schema }) {
+async function sendSingleModelInteraction({
+  trimmedKey,
+  modelId,
+  prompt,
+  mediaBlock,
+  schema,
+  isBatch,
+}) {
+  const generationConfig = getGenerationConfigForModel(modelId, { isBatch });
+  const body = {
+    model: modelId,
+    store: false,
+    input: [
+      {
+        type: "user_input",
+        content: [{ type: "text", text: prompt }, mediaBlock],
+      },
+    ],
+    ...(generationConfig ? { generation_config: generationConfig } : {}),
+    response_format: {
+      type: "text",
+      mime_type: "application/json",
+      schema,
+    },
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let res;
+  try {
+    res = await fetch(INTERACTIONS_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": trimmedKey,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (netErr) {
+    const err = new Error(
+      netErr?.name === "AbortError"
+        ? `${modelId} timed out after 38s`
+        : netErr?.message || "Network connection error"
+    );
+    err.retryable = true;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const errJson = await res.json();
+      detail = errJson?.error?.message || JSON.stringify(errJson);
+    } catch {
+      detail = await res.text();
+    }
+    const err = new Error(`Gemini API error (${res.status}): ${detail}`);
+    err.status = res.status;
+    err.retryable = isRetryableOrOverloadedError(res.status, detail);
+    throw err;
+  }
+
+  const interaction = await res.json();
+  const outputText = extractOutputText(interaction);
+  if (!outputText) {
+    const err = new Error("Gemini returned an empty response.");
+    err.retryable = true;
+    throw err;
+  }
+
+  try {
+    return JSON.parse(outputText);
+  } catch {
+    const err = new Error("Could not parse structured JSON from Gemini response.");
+    err.retryable = true;
+    throw err;
+  }
+}
+
+async function callGeminiInteractions({
+  apiKey,
+  model,
+  prompt,
+  receipt,
+  schema,
+  isBatch = false,
+  onStatus,
+}) {
   const trimmedKey = String(apiKey || "").trim();
   if (!trimmedKey) {
     throw new Error(
@@ -122,53 +264,67 @@ async function callGeminiInteractions({ apiKey, model, prompt, receipt, schema }
         mime_type: receipt.mimeType || "image/jpeg",
       };
 
-  const body = {
-    model,
-    store: false,
-    input: [
-      {
-        type: "user_input",
-        content: [{ type: "text", text: prompt }, mediaBlock],
-      },
-    ],
-    response_format: {
-      type: "text",
-      mime_type: "application/json",
-      schema,
-    },
-  };
+  const chain = buildModelFallbackChain(model, { isBatch });
+  let lastError = null;
 
-  const res = await fetch(INTERACTIONS_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": trimmedKey,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    let detail = "";
+  // Pass 1: try user's chosen model first, then automatically fail over across independent Gemini models
+  for (let i = 0; i < chain.length; i++) {
+    const candidateModel = chain[i];
     try {
-      const errJson = await res.json();
-      detail = errJson?.error?.message || JSON.stringify(errJson);
-    } catch {
-      detail = await res.text();
+      const parsed = await sendSingleModelInteraction({
+        trimmedKey,
+        modelId: candidateModel,
+        prompt,
+        mediaBlock,
+        schema,
+        isBatch,
+      });
+      return { parsed, usedModel: candidateModel, switchedModel: i > 0 };
+    } catch (err) {
+      lastError = err;
+      if (!err.retryable) {
+        throw err;
+      }
+      const nextModel = chain[i + 1];
+      if (nextModel) {
+        onStatus?.(
+          `✨ ${candidateModel} busy — auto-switching to ${nextModel}...`
+        );
+        await sleep(450 + Math.floor(Math.random() * 350));
+      }
     }
-    throw new Error(`Gemini API error (${res.status}): ${detail}`);
   }
 
-  const interaction = await res.json();
-  const outputText = extractOutputText(interaction);
-  if (!outputText) {
-    throw new Error("Gemini returned an empty response. Please try scanning again.");
+  // Pass 2: if every model pool spiked simultaneously, wait ~1.8s with jitter and retry top 2 models
+  const retryTop = chain.slice(0, 2);
+  for (let r = 0; r < retryTop.length; r++) {
+    const retryModel = retryTop[r];
+    onStatus?.(`✨ High Gemini traffic — retrying ${retryModel}...`);
+    await sleep(1600 + r * 900 + Math.floor(Math.random() * 500));
+    try {
+      const parsed = await sendSingleModelInteraction({
+        trimmedKey,
+        modelId: retryModel,
+        prompt,
+        mediaBlock,
+        schema,
+        isBatch,
+      });
+      return {
+        parsed,
+        usedModel: retryModel,
+        switchedModel: retryModel !== chain[0],
+      };
+    } catch (err) {
+      lastError = err;
+      if (!err.retryable) throw err;
+    }
   }
 
-  try {
-    return JSON.parse(outputText);
-  } catch {
-    throw new Error("Could not parse structured JSON from Gemini response.");
-  }
+  throw (
+    lastError ||
+    new Error("All Gemini models are temporarily experiencing high demand. Tap Re-scan in a few seconds.")
+  );
 }
 
 export async function analyzeReceiptWithGemini({
@@ -178,6 +334,7 @@ export async function analyzeReceiptWithGemini({
   categories,
   paymentMethods,
   baseCurrency = "MYR",
+  onStatus,
 }) {
   const categoryList = categories.length
     ? categories
@@ -209,20 +366,25 @@ ${methodHintsText}
    - If card last-4 digits on the slip match a method's hint, select that exact card.
    - If nothing indicates how it was paid, return "UNKNOWN".`;
 
-  const parsed = await callGeminiInteractions({
+  const { parsed, usedModel, switchedModel } = await callGeminiInteractions({
     apiKey,
     model,
     prompt,
     receipt,
     schema,
+    isBatch: false,
+    onStatus,
   });
 
-  return normalizeParsedItem(parsed, {
+  const normalized = normalizeParsedItem(parsed, {
     categoryList,
     paymentMethods,
     baseCurrency,
     today,
   });
+  normalized.usedModel = usedModel;
+  normalized.switchedModel = switchedModel;
+  return normalized;
 }
 
 export async function analyzeMultiReceiptsWithGemini({
@@ -232,6 +394,7 @@ export async function analyzeMultiReceiptsWithGemini({
   categories,
   paymentMethods,
   baseCurrency = "MYR",
+  onStatus,
 }) {
   const categoryList = categories.length
     ? categories
@@ -285,12 +448,14 @@ ${EXPENSE_CODE_GUIDE}
 ${methodHintsText}
    - Return "UNKNOWN" if a receipt does not show how it was paid.`;
 
-  const parsed = await callGeminiInteractions({
+  const { parsed, usedModel, switchedModel } = await callGeminiInteractions({
     apiKey,
     model,
     prompt,
     receipt,
     schema,
+    isBatch: true,
+    onStatus,
   });
 
   const rawList = Array.isArray(parsed?.receipts) ? parsed.receipts : [];
@@ -304,6 +469,8 @@ ${methodHintsText}
     if (!norm.positionLabel) {
       norm.positionLabel = `#${idx + 1}`;
     }
+    norm.usedModel = usedModel;
+    norm.switchedModel = switchedModel;
     return norm;
   });
 }

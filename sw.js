@@ -1,4 +1,4 @@
-const CACHE_NAME = "spendsnap-v10";
+const CACHE_NAME = "spendsnap-v11";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -20,7 +20,15 @@ const APP_SHELL = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(
+        APP_SHELL.map((url) =>
+          fetch(new Request(url, { cache: "reload" })).then((res) => {
+            if (res.ok) return cache.put(url, res);
+          })
+        )
+      )
+    )
   );
   self.skipWaiting();
 });
@@ -44,7 +52,7 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: "no-cache" })
       .then((response) => {
         const clone = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
