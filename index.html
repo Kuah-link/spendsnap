@@ -54,10 +54,13 @@
     <!-- Navigation Switcher -->
     <nav class="main-tabs" role="tablist">
       <button type="button" class="tab-btn active" data-tab="record" role="tab" aria-selected="true">
-        + Record Spend
+        + Single
+      </button>
+      <button type="button" class="tab-btn" data-tab="batch" role="tab" aria-selected="false">
+        A4 Batch
       </button>
       <button type="button" class="tab-btn" data-tab="history" role="tab" aria-selected="false">
-        History &amp; Summary
+        History
         <span id="pendingBadge" class="badge hidden">0</span>
       </button>
     </nav>
@@ -174,10 +177,10 @@
           </div>
         </div>
 
-        <!-- Category Chips -->
+        <!-- Category / Expense Code Chips -->
         <div class="card-section">
-          <label class="field-label">Category</label>
-          <div id="categoryChips" class="chip-grid" role="radiogroup" aria-label="Category"></div>
+          <label class="field-label">Expense Code / Category</label>
+          <div id="categoryChips" class="chip-grid" role="radiogroup" aria-label="Expense Code / Category"></div>
         </div>
 
         <!-- 2-Tier Payment Method Chips -->
@@ -214,7 +217,79 @@
       </form>
     </main>
 
-    <!-- ==================== TAB 2: HISTORY & SUMMARY ==================== -->
+    <!-- ==================== TAB 2: A4 MULTI-RECEIPT BATCH ==================== -->
+    <section id="tab-batch" class="tab-panel hidden">
+      <input type="file" id="batchCameraInput" accept="image/*" capture="environment" class="sr-only" />
+      <input type="file" id="batchUploadInput" accept="image/*,application/pdf" class="sr-only" />
+
+      <div class="batch-capture-grid" aria-label="A4 Multi-Receipt Capture">
+        <button type="button" id="snapBatchBtn" class="capture-card capture-primary">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="4" y="2" width="16" height="20" rx="2"/>
+            <line x1="8" y1="7" x2="16" y2="7"/>
+            <line x1="8" y1="12" x2="16" y2="12"/>
+            <line x1="8" y1="17" x2="13" y2="17"/>
+          </svg>
+          <span class="capture-title">Snap A4 Sheet</span>
+          <span class="capture-sub">Multiple receipts on 1 page</span>
+        </button>
+
+        <button type="button" id="uploadBatchBtn" class="capture-card">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span class="capture-title">Upload A4 / PDF</span>
+          <span class="capture-sub">Photo or scanned sheet</span>
+        </button>
+      </div>
+
+      <p class="batch-hint-banner">
+        Stick multiple monthly receipts onto an A4 sheet and snap once. Gemini extracts each receipt into its own row while uploading the intact A4 photo once to Google Drive.
+      </p>
+
+      <!-- A4 Sheet Preview & Scan Status -->
+      <div id="batchStrip" class="receipt-strip hidden">
+        <div class="receipt-preview-row">
+          <div id="batchThumbWrap" class="receipt-thumb-wrap" title="Tap to zoom A4 sheet">
+            <img id="batchThumbImg" alt="A4 receipts preview" class="receipt-thumb" />
+            <div id="batchPdfBadge" class="receipt-pdf-badge hidden">PDF</div>
+          </div>
+          <div class="receipt-meta">
+            <div id="batchStatusLine" class="gemini-status">A4 sheet attached</div>
+            <div id="batchFileInfo" class="receipt-file-info"></div>
+            <div class="receipt-actions">
+              <button type="button" id="rescanBatchBtn" class="btn-ghost-sm">✨ Re-scan A4</button>
+              <button type="button" id="addBatchItemBtn" class="btn-ghost-sm">+ Add Missed</button>
+              <button type="button" id="clearBatchBtn" class="btn-ghost-sm danger-text">Clear</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Default Payment Method Bar for unmarked slips on the A4 page -->
+      <div id="batchDefaultBar" class="card-section batch-default-bar hidden">
+        <div class="batch-default-row">
+          <label for="batchDefaultPaymentSelect" class="field-label" style="margin-bottom:0">
+            Default Payment (Unmarked Slips)
+          </label>
+          <div class="batch-default-controls">
+            <select id="batchDefaultPaymentSelect" class="batch-select"></select>
+            <button type="button" id="applyDefaultPaymentAllBtn" class="btn-ghost-sm">Apply All</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Extracted Receipt Cards -->
+      <div id="batchItemsList" class="batch-items-list"></div>
+
+      <button type="button" id="saveBatchBtn" class="btn-submit hidden">
+        Save All Receipts to Google Sheet
+      </button>
+    </section>
+
+    <!-- ==================== TAB 3: HISTORY & SUMMARY ==================== -->
     <section id="tab-history" class="tab-panel hidden">
       <!-- Pending Offline Sync Banner -->
       <div id="pendingSyncCard" class="pending-card hidden">
@@ -328,11 +403,20 @@
           <p id="connectedAccountInfo" class="settings-connected-note"></p>
         </div>
 
-        <!-- 3. Categories -->
+        <!-- 3. Expense Codes / Categories -->
         <div class="settings-block">
-          <h3>3. Spending Categories</h3>
-          <p class="settings-help">One category per line. Synced with your Sheet's <code>Settings</code> tab.</p>
-          <textarea id="categoriesTextarea" rows="6" class="text-input mono-textarea"></textarea>
+          <h3>3. Expense Codes / Categories</h3>
+          <p class="settings-help">One expense code or category per line. Synced with your Sheet's <code>Settings</code> tab.</p>
+          <textarea id="categoriesTextarea" rows="8" class="text-input mono-textarea"></textarea>
+
+          <div class="settings-btn-row mt-sm">
+            <button type="button" id="loadExpenseCodesPresetBtn" class="btn-outline-sm">
+              Load 65xx Expense Codes
+            </button>
+            <button type="button" id="loadPersonalCategoriesPresetBtn" class="btn-outline-sm">
+              Personal Family Preset
+            </button>
+          </div>
         </div>
 
         <!-- 4. Payment Methods & Card Last-4 Digits -->

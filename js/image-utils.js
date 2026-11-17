@@ -4,7 +4,10 @@ const MAX_DIMENSION = 1800;
 const JPEG_QUALITY = 0.84;
 const MAX_PDF_BYTES = 18 * 1024 * 1024; // 18 MB inline limit safety margin
 
-export async function processReceiptFile(file) {
+export async function processReceiptFile(
+  file,
+  { maxDimension = MAX_DIMENSION, quality = JPEG_QUALITY } = {}
+) {
   if (!file) throw new Error("No file selected.");
 
   if (file.type === "application/pdf" || file.name?.toLowerCase().endsWith(".pdf")) {
@@ -31,7 +34,7 @@ export async function processReceiptFile(file) {
   }
 
   const bitmap = await loadDrawableImage(file);
-  const { width, height } = fitDimensions(bitmap.width, bitmap.height, MAX_DIMENSION);
+  const { width, height } = fitDimensions(bitmap.width, bitmap.height, maxDimension);
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -51,7 +54,7 @@ export async function processReceiptFile(file) {
     canvas.toBlob(
       (b) => (b ? resolve(b) : reject(new Error("Failed to encode receipt image."))),
       "image/jpeg",
-      JPEG_QUALITY
+      quality
     );
   });
 

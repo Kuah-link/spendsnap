@@ -6,7 +6,7 @@ import { loadSettings, saveSettings, formatTimestampLocal } from "./config.js";
 const SCOPES = "https://www.googleapis.com/auth/drive.file email profile";
 const TOKEN_STORAGE_KEY = "spendsnap_oauth_token_v1";
 const FOLDER_CACHE_KEY = "spendsnap_folder_cache_v1";
-export const CURRENT_DASHBOARD_SCHEMA_VERSION = 2;
+export const CURRENT_DASHBOARD_SCHEMA_VERSION = 3;
 
 let tokenClient = null;
 let pendingTokenResolve = null;
@@ -304,23 +304,23 @@ export async function ensureWorkspaceProvisioned(explicitToken) {
       : {}),
   });
 
-  // Auto-upgrade existing v1 Sheet Dashboard formulas (shift-proof whole-column SUMIFS/QUERY)
-  if (
+  // Auto-upgrade existing Sheet Settings (v3 65xx Expense Codes) & Dashboard formulas
+  const needsSchemaUpgrade =
     !createdNewSheet &&
-    (settings.dashboardSchemaVersion || 1) < CURRENT_DASHBOARD_SCHEMA_VERSION
-  ) {
+    (settings.dashboardSchemaVersion || 1) < CURRENT_DASHBOARD_SCHEMA_VERSION;
+
+  if (needsSchemaUpgrade) {
     try {
       await repairDashboardTab(accessToken);
       settings = loadSettings();
     } catch {
       // Non-fatal if offline or custom sheet
     }
-  }
-
-  // If connecting to an existing sheet on a new device, pull their saved Categories & Cards
-  if (!createdNewSheet) {
+  } else if (!createdNewSheet) {
+    // If connecting to an already-upgraded sheet on a new device, pull saved Categories & Cards
     try {
       await pullSettingsFromSheet(accessToken);
+      settings = loadSettings();
     } catch {
       // Non-fatal if user renamed Settings tab
     }
@@ -348,7 +348,7 @@ function buildDashboardRows() {
   const normYearPrefix = 'TRIM(TO_TEXT($E$3))&"-*"';
 
   const dashboardRows = [
-    ["SPENDSNAP — PERSONAL SPENDING DASHBOARD", "", "", "", "", "", ""],
+    ["SPENDSNAP — EXPENSE LEDGER DASHBOARD", "", "", "", "", "", ""],
     ["", "", "", "", "", "", ""],
     [
       "Selected Month (YYYY-MM):",
@@ -371,7 +371,7 @@ function buildDashboardRows() {
     ],
     ["", "", "", "", "", "", ""],
     [
-      "Category",
+      "Expense Code / Category",
       "Selected Month (MYR)",
       "Full Year (MYR)",
       "",
@@ -493,8 +493,8 @@ async function applyDashboardAndLedgerFormatting(
       },
       {
         updateDimensionProperties: {
-          range: { sheetId: transactionsSheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 },
-          properties: { pixelSize: 240 },
+          range: { sheetId: transactionsSheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 5 },
+          properties: { pixelSize: 245 },
           fields: "pixelSize",
         },
       }
@@ -502,19 +502,28 @@ async function applyDashboardAndLedgerFormatting(
   }
 
   if (typeof settingsSheetId === "number") {
-    requests.push({
-      repeatCell: {
-        range: {
-          sheetId: settingsSheetId,
-          startRowIndex: 0,
-          endRowIndex: 1,
-          startColumnIndex: 0,
-          endColumnIndex: 6,
+    requests.push(
+      {
+        repeatCell: {
+          range: {
+            sheetId: settingsSheetId,
+            startRowIndex: 0,
+            endRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: 6,
+          },
+          cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
         },
-        cell: { userEnteredFormat: { backgroundColor: tealHeaderBg, textFormat: whiteText } },
-        fields: "userEnteredFormat(backgroundColor,textFormat)",
       },
-    });
+      {
+        updateDimensionProperties: {
+          range: { sheetId: settingsSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 },
+          properties: { pixelSize: 265 },
+          fields: "pixelSize",
+        },
+      }
+    );
   }
 
   if (typeof dashboardSheetId === "number") {
@@ -647,10 +656,17 @@ async function applyDashboardAndLedgerFormatting(
           fields: "userEnteredFormat.numberFormat",
         },
       },
-      // Comfortable column widths on Dashboard
+      // Comfortable column widths on Dashboard (wider Col A for 65xx Expense Codes)
       {
         updateDimensionProperties: {
-          range: { sheetId: dashboardSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 7 },
+          range: { sheetId: dashboardSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 },
+          properties: { pixelSize: 265 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: dashboardSheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 7 },
           properties: { pixelSize: 175 },
           fields: "pixelSize",
         },
@@ -722,6 +738,16 @@ export async function repairDashboardTab(explicitToken) {
       }
     );
     dashboardSheetId = added.replies?.[0]?.addSheet?.properties?.sheetId;
+  }
+
+  // If upgrading from an older schema (< v3), push the migrated 65xx Expense Codes to Settings!A:E
+  if ((settings.dashboardSchemaVersion || 1) < CURRENT_DASHBOARD_SCHEMA_VERSION) {
+    await writeSettingsColumns(
+      accessToken,
+      spreadsheetId,
+      settings.categories,
+      settings.paymentMethods
+    );
   }
 
   // Clear old Dashboard formulas before writing fresh whole-column formulas
@@ -1041,18 +1067,108 @@ export async function syncTransactionToGoogle(txn) {
   return { receiptUrl, spreadsheetUrl: settings.spreadsheetUrl };
 }
 
-// ---------------- Two-Way Settings Sync with Sheet ----------------
-
-export async function pushSettingsToSheet() {
+export async function syncBatchTransactionsToGoogle({ txns, sharedReceipt }) {
+  if (!Array.isArray(txns) || txns.length === 0) {
+    throw new Error("No batch transactions to sync.");
+  }
   const accessToken = getValidAccessToken();
-  if (!accessToken) return false;
+  if (!accessToken) {
+    throw new Error("Google session expired. Tap 'Reconnect Google' at the top.");
+  }
+
   const settings = await ensureWorkspaceProvisioned(accessToken);
 
-  const maxRows = Math.max(settings.categories.length, settings.paymentMethods.length, 20);
+  // Determine the primary month (majority YYYY-MM across extracted receipts) for the single A4 Drive file
+  const fallbackYm = new Date().toISOString().slice(0, 7);
+  const ymCounts = new Map();
+  for (const t of txns) {
+    const ym = String(t.date || "").slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(ym)) {
+      ymCounts.set(ym, (ymCounts.get(ym) || 0) + 1);
+    }
+  }
+  let primaryYearMonth = fallbackYm;
+  let bestCount = 0;
+  for (const [ym, count] of ymCounts.entries()) {
+    if (count > bestCount) {
+      bestCount = count;
+      primaryYearMonth = ym;
+    }
+  }
+
+  const primaryDate =
+    txns.find((t) => String(t.date || "").startsWith(primaryYearMonth))?.date ||
+    txns[0]?.date ||
+    `${primaryYearMonth}-01`;
+  const totalMyr = txns.reduce((acc, t) => acc + Number(t.amountMyr || 0), 0);
+
+  // Upload the intact A4 sheet ONCE to Drive and link all rows in the batch to it
+  let sharedReceiptUrl =
+    sharedReceipt?.uploadedUrl || txns.find((t) => t.receiptUrl)?.receiptUrl || "";
+  if (!sharedReceiptUrl && sharedReceipt?.base64) {
+    const monthFolderId = await getMonthlyReceiptFolderId(
+      accessToken,
+      settings.driveReceiptsFolderId,
+      primaryYearMonth
+    );
+    const ext =
+      String(sharedReceipt.extension || "jpg")
+        .replace(/[^a-z0-9]/gi, "")
+        .toLowerCase() || "jpg";
+    const filename = `${primaryDate}_A4-Batch-${txns.length}-Receipts_RM${totalMyr.toFixed(
+      2
+    )}.${ext}`;
+    sharedReceiptUrl = await uploadReceiptToDrive(accessToken, {
+      parentFolderId: monthFolderId,
+      filename,
+      base64: sharedReceipt.base64,
+      mimeType: sharedReceipt.mimeType || "image/jpeg",
+    });
+  }
+
+  const rows = txns.map((txn) => {
+    const rowYm = String(txn.date || "").slice(0, 7) || primaryYearMonth;
+    const linkUrl = txn.receiptUrl || sharedReceiptUrl;
+    const linkLabel = sharedReceipt ? "View A4 Sheet" : "View Receipt";
+    const receiptCell = linkUrl
+      ? `=HYPERLINK("${linkUrl.replace(/"/g, '""')}", "${linkLabel}")`
+      : "";
+    return [
+      txn.timestamp || formatTimestampLocal(),
+      txn.date,
+      `'${rowYm}`, // Force plain text YYYY-MM
+      txn.description,
+      txn.category,
+      Number(Number(txn.amountMyr || 0).toFixed(2)),
+      txn.paymentMethod,
+      txn.remarks || "",
+      receiptCell,
+    ];
+  });
+
+  await googleApiFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      settings.spreadsheetId
+    )}/values/Transactions!A:I:append?valueInputOption=USER_ENTERED&insertDataOption=OVERWRITE`,
+    accessToken,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: rows }),
+    }
+  );
+
+  return { receiptUrl: sharedReceiptUrl, spreadsheetUrl: settings.spreadsheetUrl };
+}
+
+// ---------------- Two-Way Settings Sync with Sheet ----------------
+
+async function writeSettingsColumns(accessToken, spreadsheetId, categories, paymentMethods) {
+  const maxRows = Math.max(categories.length, paymentMethods.length, 20);
   const values = [["Category", "", "Payment Method", "Group", "Match Hints / Last 4 Digits"]];
   for (let i = 0; i < maxRows; i++) {
-    const cat = settings.categories[i] || "";
-    const pm = settings.paymentMethods[i];
+    const cat = categories[i] || "";
+    const pm = paymentMethods[i];
     values.push([
       cat,
       "",
@@ -1064,7 +1180,7 @@ export async function pushSettingsToSheet() {
 
   await googleApiFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
-      settings.spreadsheetId
+      spreadsheetId
     )}/values/Settings!A1:E${values.length}?valueInputOption=USER_ENTERED`,
     accessToken,
     {
@@ -1072,6 +1188,18 @@ export async function pushSettingsToSheet() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ values }),
     }
+  );
+}
+
+export async function pushSettingsToSheet() {
+  const accessToken = getValidAccessToken();
+  if (!accessToken) return false;
+  const settings = await ensureWorkspaceProvisioned(accessToken);
+  await writeSettingsColumns(
+    accessToken,
+    settings.spreadsheetId,
+    settings.categories,
+    settings.paymentMethods
   );
   return true;
 }

@@ -181,8 +181,8 @@ body {
 /* Main Navigation Tabs */
 .main-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
   padding: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -194,15 +194,17 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   height: 40px;
+  padding: 0 6px;
   border: none;
   border-radius: 9px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .tab-btn.active {
@@ -539,13 +541,16 @@ body {
 
 .chip {
   min-height: 40px;
-  padding: 7px 13px;
+  max-width: 100%;
+  padding: 7px 12px;
   border-radius: 999px;
   border: 1.5px solid var(--border);
   background: var(--surface-subtle);
   color: var(--text);
-  font-size: 0.87rem;
+  font-size: 0.84rem;
   font-weight: 600;
+  text-align: left;
+  line-height: 1.25;
   cursor: pointer;
   transition: all 0.12s ease;
 }
@@ -633,6 +638,157 @@ body {
 
 .btn-submit:active:not(:disabled) {
   transform: scale(0.99);
+}
+
+/* A4 Multi-Receipt Batch Tab */
+.batch-capture-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 9px;
+  margin-bottom: 10px;
+}
+
+.batch-hint-banner {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.batch-default-bar {
+  margin-bottom: 12px;
+  padding: 11px 13px;
+}
+
+.batch-default-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-default-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 210px;
+}
+
+.batch-select {
+  height: 40px;
+  padding: 0 9px;
+  border-radius: 9px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 600;
+  width: 100%;
+  min-width: 0;
+}
+
+.batch-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.batch-item-card {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: var(--radius);
+  padding: 12px 13px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.batch-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.batch-item-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.batch-pos-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-soft-text);
+}
+
+.batch-fx-badge {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.batch-grid-top {
+  display: grid;
+  grid-template-columns: 138px 86px 1fr;
+  gap: 7px;
+}
+
+@media (max-width: 410px) {
+  .batch-grid-top {
+    grid-template-columns: 1fr 1fr;
+  }
+  .batch-grid-top .batch-date-input {
+    grid-column: 1 / -1;
+  }
+}
+
+.batch-grid-two {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 7px;
+}
+
+@media (max-width: 440px) {
+  .batch-grid-two {
+    grid-template-columns: 1fr;
+  }
+}
+
+.batch-input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+.batch-amount-input {
+  font-weight: 700;
+}
+
+.batch-input:focus,
+.batch-select:focus {
+  outline: none;
+  border-color: var(--primary);
 }
 
 /* History & Summary Tab */

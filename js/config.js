@@ -1,6 +1,20 @@
 // Default configuration, presets, and local storage / IndexedDB helpers
 
 export const DEFAULT_CATEGORIES = [
+  "6519 - Travel Expense",
+  "6518 - Meal & Entertainment",
+  "6512 - Telephone & Internet",
+  "6516 - Office Expense",
+  "6514 - Accounting & Other Professional Fees",
+  "6507 - General Expense",
+  "6522 - Subscription",
+  "6517 - Printing & Stationery",
+  "6511 - Water & Electricity",
+  "6520 - Daily Commute Expense",
+  "6513 - Legal Fees",
+];
+
+export const PERSONAL_CATEGORIES = [
   "Meals",
   "Groceries",
   "Transportation & Vehicles",
@@ -108,15 +122,36 @@ export function loadSettings() {
     saved.googleClientId = urlCid.trim();
   }
 
+  // Migrate v1 categories to v2 65xx Expense Codes once
+  let categories =
+    Array.isArray(saved.categories) && saved.categories.length > 0
+      ? saved.categories
+      : [...DEFAULT_CATEGORIES];
+  let categoriesSchemaVersion = saved.categoriesSchemaVersion || 1;
+  if (categoriesSchemaVersion < 2) {
+    categories = [...DEFAULT_CATEGORIES];
+    categoriesSchemaVersion = 2;
+    try {
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify({
+          ...saved,
+          categories,
+          categoriesSchemaVersion,
+        })
+      );
+    } catch {
+      // ignore
+    }
+  }
+
   return {
     geminiApiKey: saved.geminiApiKey || "",
     geminiModel: saved.geminiModel || "gemini-4-hydrogen",
     googleClientId: saved.googleClientId || EMBEDDED_GOOGLE_CLIENT_ID || "",
     baseCurrency: saved.baseCurrency || "MYR",
-    categories:
-      Array.isArray(saved.categories) && saved.categories.length > 0
-        ? saved.categories
-        : [...DEFAULT_CATEGORIES],
+    categories,
+    categoriesSchemaVersion,
     paymentMethods:
       Array.isArray(saved.paymentMethods) && saved.paymentMethods.length > 0
         ? saved.paymentMethods

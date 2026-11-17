@@ -1,6 +1,8 @@
 import {
   CURRENCIES,
   GEMINI_MODELS,
+  DEFAULT_CATEGORIES,
+  PERSONAL_CATEGORIES,
   DEFAULT_PAYMENT_METHODS,
   COLLEAGUE_PAYMENT_METHODS,
   loadSettings,
@@ -13,13 +15,17 @@ import {
 } from "./config.js";
 import { processReceiptFile } from "./image-utils.js";
 import { getRateToBase, appendForeignCurrencyRemark } from "./currency.js";
-import { analyzeReceiptWithGemini } from "./gemini.js";
+import {
+  analyzeReceiptWithGemini,
+  analyzeMultiReceiptsWithGemini,
+} from "./gemini.js";
 import {
   getTokenStatus,
   getValidAccessToken,
   requestGoogleSignIn,
   signOutGoogle,
   syncTransactionToGoogle,
+  syncBatchTransactionsToGoogle,
   pushSettingsToSheet,
   pullSettingsFromSheet,
   fetchRecentSheetSummary,
@@ -29,7 +35,7 @@ import {
 
 // ---------------- App State ----------------
 let settings = loadSettings();
-let selectedCategory = settings.categories[0] || "Meals";
+let selectedCategory = settings.categories[0] || DEFAULT_CATEGORIES[0];
 let selectedPaymentMethod =
   settings.defaultPaymentMethod ||
   settings.paymentMethods[0]?.name ||
@@ -37,6 +43,8 @@ let selectedPaymentMethod =
 let cardsDrawerOpen = false;
 let currentReceipt = null; // { base64, mimeType, isPdf, extension, sizeBytes, previewDataUrl, originalName }
 let currentFxRate = 1;
+let currentBatchReceipt = null;
+let batchItems = [];
 let cloudHistoryCache = [];
 let deferredInstallPrompt = null;
 
@@ -77,6 +85,19 @@ const selectedPaymentLabel = el("selectedPaymentLabel");
 const remarksInput = el("remarksInput");
 const saveExpenseBtn = el("saveExpenseBtn");
 
+const batchCameraInput = el("batchCameraInput");
+const batchUploadInput = el("batchUploadInput");
+const batchStrip = el("batchStrip");
+const batchThumbWrap = el("batchThumbWrap");
+const batchThumbImg = el("batchThumbImg");
+const batchPdfBadge = el("batchPdfBadge");
+const batchStatusLine = el("batchStatusLine");
+const batchFileInfo = el("batchFileInfo");
+const batchDefaultBar = el("batchDefaultBar");
+const batchDefaultPaymentSelect = el("batchDefaultPaymentSelect");
+const batchItemsList = el("batchItemsList");
+const saveBatchBtn = el("saveBatchBtn");
+
 // ---------------- Initialization ----------------
 
 function init() {
@@ -84,6 +105,7 @@ function init() {
   setupInstallBanner();
   populateCurrencySelect();
   populateModelSelect();
+  populateBatchDefaultPaymentSelect();
 
   dateInput.value = todayISO();
   updateFolderHint();
@@ -95,7 +117,7 @@ function init() {
 
   bindEvents();
 
-  // Auto-upgrade existing Sheet Dashboard formulas if Google session is currently active
+  // Auto-upgrade existing Sheet Settings (65xx Expense Codes) & Dashboard formulas if active
   if (
     getValidAccessToken() &&
     settings.spreadsheetId &&
@@ -104,7 +126,7 @@ function init() {
     repairDashboardTab()
       .then(() => {
         settings = loadSettings();
-        showToast("✓ Upgraded Google Sheet Dashboard formulas!");
+        showToast("✓ Upgraded Google Sheet Expense Codes & Dashboard!");
       })
       .catch(() => {});
   }
@@ -112,7 +134,7 @@ function init() {
   // Periodically update token expiry indicator
   setInterval(refreshHeaderStatus, 30_000);
 
-  // Check home-screen shortcut query (?mode=manual or ?mode=snap)
+  // Check home-screen shortcut query (?mode=manual, ?mode=snap, or ?mode=batch)
   const mode = new URLSearchParams(window.location.search).get("mode");
   if (mode === "manual") {
     selectedPaymentMethod = "Cash";
@@ -125,7 +147,21 @@ function init() {
     } catch {
       // Browser requires explicit tap
     }
+  } else if (mode === "batch") {
+    switchMainTab("batch");
   }
+}
+
+function switchMainTab(target) {
+  document.querySelectorAll(".tab-btn").forEach((b) => {
+    const isMatch = b.dataset.tab === target;
+    b.classList.toggle("active", isMatch);
+    b.setAttribute("aria-selected", isMatch ? "true" : "false");
+  });
+  el("tab-record").classList.toggle("hidden", target !== "record");
+  el("tab-batch").classList.toggle("hidden", target !== "batch");
+  el("tab-history").classList.toggle("hidden", target !== "history");
+  if (target === "history") refreshPendingCountAndHistory();
 }
 
 function registerServiceWorker() {
@@ -161,6 +197,23 @@ function populateModelSelect() {
   el("geminiModelSelect").innerHTML = GEMINI_MODELS.map(
     (m) => `<option value="${m.id}">${m.label}</option>`
   ).join("");
+}
+
+function populateBatchDefaultPaymentSelect() {
+  const prev = batchDefaultPaymentSelect.value;
+  const methods = settings.paymentMethods || [];
+  batchDefaultPaymentSelect.innerHTML = methods
+    .map(
+      (m) =>
+        `<option value="${escapeAttr(m.name)}">${escapeHtml(m.name)}</option>`
+    )
+    .join("");
+  const preferred =
+    methods.find((m) => m.name === prev)?.name ||
+    methods.find((m) => m.name === selectedPaymentMethod)?.name ||
+    methods[0]?.name ||
+    "Cash";
+  batchDefaultPaymentSelect.value = preferred;
 }
 
 // ---------------- Rendering Chips & Status ----------------
@@ -210,6 +263,7 @@ function refreshHeaderStatus() {
   saveExpenseBtn.textContent = getValidAccessToken()
     ? "Save to Google Sheet"
     : "Save Transaction (Queues Locally)";
+  updateSaveBatchButtonLabel();
 }
 
 function renderCategoryChips() {
@@ -441,6 +495,461 @@ function clearReceipt() {
   receiptStrip.classList.remove("scanning");
 }
 
+// ---------------- A4 Multi-Receipt Batch Scan & Save ----------------
+
+async function handleBatchFileSelected(file) {
+  if (!file) return;
+  try {
+    batchStrip.classList.remove("hidden");
+    batchStrip.classList.add("scanning");
+    batchStatusLine.textContent = "Optimizing high-res A4 sheet...";
+    batchFileInfo.textContent = file.name || "";
+
+    // Higher 3000px limit preserves crisp text across 4–10 small receipts stuck on one A4 page
+    currentBatchReceipt = await processReceiptFile(file, {
+      maxDimension: 3000,
+      quality: 0.88,
+    });
+
+    if (currentBatchReceipt.isPdf) {
+      batchThumbImg.classList.add("hidden");
+      batchPdfBadge.classList.remove("hidden");
+    } else {
+      batchPdfBadge.classList.add("hidden");
+      batchThumbImg.src = currentBatchReceipt.previewDataUrl;
+      batchThumbImg.classList.remove("hidden");
+    }
+
+    const kb = Math.max(1, Math.round(currentBatchReceipt.sizeBytes / 1024));
+    batchFileInfo.textContent = `${currentBatchReceipt.originalName} (${kb} KB — uploaded once for all rows)`;
+
+    await runBatchGeminiScan();
+  } catch (err) {
+    batchStrip.classList.remove("scanning");
+    showToast(err.message || "Could not process A4 sheet.");
+  }
+}
+
+async function runBatchGeminiScan() {
+  if (!currentBatchReceipt) return;
+  settings = loadSettings();
+  populateBatchDefaultPaymentSelect();
+
+  if (!settings.geminiApiKey) {
+    batchStrip.classList.remove("scanning");
+    batchStatusLine.textContent =
+      "A4 attached — add Gemini API Key in Settings to auto-extract receipts";
+    if (batchItems.length === 0) {
+      addManualBatchItem();
+    }
+    showToast("Open Settings (top right) to paste your Gemini API Key.");
+    return;
+  }
+
+  try {
+    batchStrip.classList.add("scanning");
+    batchStatusLine.textContent = "✨ Gemini extracting all receipts on A4 page...";
+
+    const extracted = await analyzeMultiReceiptsWithGemini({
+      receipt: currentBatchReceipt,
+      apiKey: settings.geminiApiKey,
+      model: settings.geminiModel,
+      categories: settings.categories,
+      paymentMethods: settings.paymentMethods,
+      baseCurrency: settings.baseCurrency,
+    });
+
+    if (!extracted || extracted.length === 0) {
+      batchStatusLine.textContent =
+        "No clear receipts detected — tap '+ Add Missed' or Re-scan";
+      if (batchItems.length === 0) addManualBatchItem();
+      showToast("No receipts detected. Try a clearer photo or add manually.");
+      return;
+    }
+
+    const base = settings.baseCurrency || "MYR";
+    const fxMap = { [base]: 1 };
+    const uniqueForeign = [
+      ...new Set(
+        extracted
+          .map((it) => (it.currency || base).toUpperCase())
+          .filter((c) => c && c !== base)
+      ),
+    ];
+    for (const code of uniqueForeign) {
+      const { rate } = await getRateToBase(code, base);
+      fxMap[code] = rate;
+    }
+
+    const fallbackPayment =
+      batchDefaultPaymentSelect.value ||
+      selectedPaymentMethod ||
+      settings.paymentMethods[0]?.name ||
+      "Cash";
+
+    batchItems = extracted.map((it, idx) => {
+      const code = (it.currency || base).toUpperCase();
+      const cardSuffix = it.cardLast4 ? ` (Card *${it.cardLast4})` : "";
+      return {
+        id: `bitem_${Date.now()}_${idx}`,
+        positionLabel: `${it.positionLabel || `#${idx + 1}`}${cardSuffix}`,
+        date: it.date || todayISO(),
+        description: it.description || "",
+        amount: it.amount > 0 ? Number(it.amount.toFixed(2)) : "",
+        currency: code,
+        fxRate: fxMap[code] || 1,
+        category: settings.categories.includes(it.category)
+          ? it.category
+          : settings.categories[0] || DEFAULT_CATEGORIES[0],
+        paymentMethod: it.paymentMethod || fallbackPayment,
+        paymentAutoMatched: Boolean(it.paymentMethod),
+        remarks: it.remarks || "",
+      };
+    });
+
+    renderBatchItems();
+    batchStatusLine.textContent = `✓ Extracted ${batchItems.length} receipt${
+      batchItems.length === 1 ? "" : "s"
+    } — review & save`;
+    showToast(
+      `Found ${batchItems.length} receipt${
+        batchItems.length === 1 ? "" : "s"
+      } on A4 sheet!`
+    );
+  } catch (err) {
+    batchStatusLine.textContent = "Batch scan failed — tap Re-scan or add manually";
+    showToast(err.message || "Gemini batch scan failed.");
+  } finally {
+    batchStrip.classList.remove("scanning");
+  }
+}
+
+function addManualBatchItem() {
+  const base = settings.baseCurrency || "MYR";
+  const lastDate = batchItems[batchItems.length - 1]?.date || todayISO();
+  const fallbackPayment =
+    batchDefaultPaymentSelect.value ||
+    selectedPaymentMethod ||
+    settings.paymentMethods[0]?.name ||
+    "Cash";
+
+  batchItems.push({
+    id: `bitem_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    positionLabel: `#${batchItems.length + 1} Manual`,
+    date: lastDate,
+    description: "",
+    amount: "",
+    currency: base,
+    fxRate: 1,
+    category: settings.categories[0] || DEFAULT_CATEGORIES[0],
+    paymentMethod: fallbackPayment,
+    paymentAutoMatched: false,
+    remarks: "",
+  });
+  renderBatchItems();
+}
+
+function clearBatch() {
+  currentBatchReceipt = null;
+  batchItems = [];
+  batchCameraInput.value = "";
+  batchUploadInput.value = "";
+  batchStrip.classList.add("hidden");
+  batchStrip.classList.remove("scanning");
+  batchDefaultBar.classList.add("hidden");
+  batchItemsList.innerHTML = "";
+  saveBatchBtn.classList.add("hidden");
+}
+
+function computeBatchItemMyr(item) {
+  const base = settings.baseCurrency || "MYR";
+  const amt = Number(item.amount || 0);
+  if (!Number.isFinite(amt) || amt <= 0) return 0;
+  const rate = item.currency === base ? 1 : Number(item.fxRate || 1);
+  return Number((amt * rate).toFixed(2));
+}
+
+function updateSaveBatchButtonLabel() {
+  if (!saveBatchBtn || batchItems.length === 0) return;
+  const totalMyr = batchItems.reduce((acc, it) => acc + computeBatchItemMyr(it), 0);
+  const count = batchItems.length;
+  const noun = count === 1 ? "Receipt" : "Receipts";
+  saveBatchBtn.textContent = getValidAccessToken()
+    ? `Save ${count} ${noun} (RM ${totalMyr.toFixed(2)}) to Sheet`
+    : `Save ${count} ${noun} (RM ${totalMyr.toFixed(2)}) Locally`;
+}
+
+function renderBatchItems() {
+  const hasItems = batchItems.length > 0;
+  batchDefaultBar.classList.toggle("hidden", !hasItems);
+  saveBatchBtn.classList.toggle("hidden", !hasItems);
+  batchItemsList.innerHTML = "";
+  if (!hasItems) return;
+
+  const base = settings.baseCurrency || "MYR";
+  const knownCodes = CURRENCIES.map((c) => c.code);
+
+  batchItems.forEach((item, index) => {
+    const card = document.createElement("div");
+    card.className = "batch-item-card";
+    card.dataset.itemId = item.id;
+
+    const currencyCodes = knownCodes.includes(item.currency)
+      ? knownCodes
+      : [...knownCodes, item.currency];
+
+    const currencyOpts = currencyCodes
+      .map(
+        (code) =>
+          `<option value="${escapeAttr(code)}"${
+            code === item.currency ? " selected" : ""
+          }>${escapeHtml(code)}</option>`
+      )
+      .join("");
+
+    const catList = settings.categories.includes(item.category)
+      ? settings.categories
+      : [item.category, ...settings.categories];
+    const categoryOpts = catList
+      .map(
+        (cat) =>
+          `<option value="${escapeAttr(cat)}"${
+            cat === item.category ? " selected" : ""
+          }>${escapeHtml(cat)}</option>`
+      )
+      .join("");
+
+    const methodNames = settings.paymentMethods.map((m) => m.name);
+    const allMethods = methodNames.includes(item.paymentMethod)
+      ? methodNames
+      : [item.paymentMethod, ...methodNames].filter(Boolean);
+    const paymentOpts = allMethods
+      .map(
+        (pm) =>
+          `<option value="${escapeAttr(pm)}"${
+            pm === item.paymentMethod ? " selected" : ""
+          }>${escapeHtml(pm)}</option>`
+      )
+      .join("");
+
+    const showFx = item.currency !== base;
+    const fxText = showFx ? `≈ RM ${computeBatchItemMyr(item).toFixed(2)}` : "";
+
+    card.innerHTML = `
+      <div class="batch-item-header">
+        <div class="batch-item-badges">
+          <span class="batch-pos-badge">${escapeHtml(
+            item.positionLabel || `#${index + 1}`
+          )}</span>
+          <span class="batch-fx-badge${showFx ? "" : " hidden"}">${escapeHtml(
+      fxText
+    )}</span>
+        </div>
+        <button type="button" class="btn-ghost-sm danger-text batch-remove-btn">Remove</button>
+      </div>
+      <div class="batch-grid-top">
+        <input type="date" class="batch-input batch-date-input" value="${escapeAttr(
+          item.date
+        )}" aria-label="Receipt date" />
+        <select class="batch-select batch-currency-select" aria-label="Currency">${currencyOpts}</select>
+        <input type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00" class="batch-input batch-amount-input" value="${escapeAttr(
+          item.amount
+        )}" aria-label="Amount" />
+      </div>
+      <input type="text" class="batch-input batch-desc-input" placeholder="Merchant — Item or Service" value="${escapeAttr(
+        item.description
+      )}" aria-label="Description" />
+      <div class="batch-grid-two">
+        <select class="batch-select batch-cat-select" aria-label="Expense Code">${categoryOpts}</select>
+        <select class="batch-select batch-pm-select" aria-label="Payment Method">${paymentOpts}</select>
+      </div>
+      <input type="text" class="batch-input batch-remarks-input" placeholder="Optional remarks / invoice ref..." value="${escapeAttr(
+        item.remarks
+      )}" aria-label="Remarks" />
+    `;
+
+    const fxBadge = card.querySelector(".batch-fx-badge");
+    const dateEl = card.querySelector(".batch-date-input");
+    const currEl = card.querySelector(".batch-currency-select");
+    const amtEl = card.querySelector(".batch-amount-input");
+    const descEl = card.querySelector(".batch-desc-input");
+    const catEl = card.querySelector(".batch-cat-select");
+    const pmEl = card.querySelector(".batch-pm-select");
+    const remEl = card.querySelector(".batch-remarks-input");
+    const removeBtn = card.querySelector(".batch-remove-btn");
+
+    const refreshItemFxBadge = () => {
+      if (item.currency === base) {
+        fxBadge.classList.add("hidden");
+      } else {
+        fxBadge.textContent = `≈ RM ${computeBatchItemMyr(item).toFixed(2)}`;
+        fxBadge.classList.remove("hidden");
+      }
+      updateSaveBatchButtonLabel();
+    };
+
+    dateEl.addEventListener("change", () => {
+      item.date = dateEl.value || todayISO();
+    });
+    currEl.addEventListener("change", async () => {
+      const newCode = currEl.value || base;
+      item.currency = newCode;
+      if (newCode === base) {
+        item.fxRate = 1;
+      } else {
+        const { rate } = await getRateToBase(newCode, base);
+        item.fxRate = rate;
+      }
+      refreshItemFxBadge();
+    });
+    amtEl.addEventListener("input", () => {
+      item.amount = amtEl.value;
+      refreshItemFxBadge();
+    });
+    descEl.addEventListener("input", () => {
+      item.description = descEl.value;
+    });
+    catEl.addEventListener("change", () => {
+      item.category = catEl.value;
+    });
+    pmEl.addEventListener("change", () => {
+      item.paymentMethod = pmEl.value;
+      item.paymentAutoMatched = true;
+    });
+    remEl.addEventListener("input", () => {
+      item.remarks = remEl.value;
+    });
+    removeBtn.addEventListener("click", () => {
+      batchItems = batchItems.filter((b) => b.id !== item.id);
+      renderBatchItems();
+    });
+
+    batchItemsList.appendChild(card);
+  });
+
+  updateSaveBatchButtonLabel();
+}
+
+async function handleSaveBatch() {
+  if (batchItems.length === 0) {
+    showToast("Snap or upload an A4 sheet with receipts first.");
+    return;
+  }
+
+  const base = settings.baseCurrency || "MYR";
+  const cards = batchItemsList.querySelectorAll(".batch-item-card");
+
+  for (let i = 0; i < batchItems.length; i++) {
+    const it = batchItems[i];
+    const amt = Number(it.amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      showToast(`Receipt #${i + 1}: Please enter an amount greater than 0.`);
+      cards[i]?.querySelector(".batch-amount-input")?.focus();
+      return;
+    }
+    if (!String(it.description || "").trim()) {
+      showToast(`Receipt #${i + 1}: Please enter a merchant / description.`);
+      cards[i]?.querySelector(".batch-desc-input")?.focus();
+      return;
+    }
+  }
+
+  const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const nowIso = new Date().toISOString();
+  const stamp = formatTimestampLocal();
+
+  const txns = batchItems.map((it, idx) => {
+    const rawAmount = Number(it.amount);
+    const rate = it.currency === base ? 1 : Number(it.fxRate || 1);
+    const amountMyr = Number((rawAmount * rate).toFixed(2));
+    const dateVal = it.date || todayISO();
+    const finalRemarks = appendForeignCurrencyRemark(it.remarks, {
+      currency: it.currency,
+      originalAmount: rawAmount,
+      rate,
+      baseCurrency: base,
+    });
+
+    return {
+      localId: `txn_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
+      batchId,
+      createdAt: nowIso,
+      timestamp: stamp,
+      date: dateVal,
+      yearMonth: dateVal.slice(0, 7),
+      description: String(it.description).trim(),
+      category: it.category,
+      amountMyr,
+      originalCurrency: it.currency,
+      originalAmount: rawAmount,
+      paymentMethod: it.paymentMethod,
+      remarks: finalRemarks,
+      status: "pending",
+      // Store the A4 image base64 only on the first item in offline queue so phone storage stays tiny
+      receiptBase64: idx === 0 && currentBatchReceipt ? currentBatchReceipt.base64 : null,
+      receiptMimeType:
+        idx === 0 && currentBatchReceipt ? currentBatchReceipt.mimeType : null,
+      receiptExtension:
+        idx === 0 && currentBatchReceipt ? currentBatchReceipt.extension : null,
+      receiptUrl: "",
+    };
+  });
+
+  const totalMyr = txns.reduce((acc, t) => acc + t.amountMyr, 0);
+
+  saveBatchBtn.disabled = true;
+  saveBatchBtn.textContent = currentBatchReceipt
+    ? `Uploading A4 sheet once & saving ${txns.length} rows...`
+    : `Saving ${txns.length} rows...`;
+
+  try {
+    // Persist locally first so data is never lost
+    for (const t of txns) {
+      await saveLocalTransaction(t);
+    }
+
+    if (getValidAccessToken()) {
+      try {
+        const synced = await syncBatchTransactionsToGoogle({
+          txns,
+          sharedReceipt: currentBatchReceipt,
+        });
+        for (const t of txns) {
+          await saveLocalTransaction({
+            ...t,
+            status: "synced",
+            receiptBase64: null,
+            receiptUrl: synced.receiptUrl || "",
+          });
+        }
+        refreshHeaderStatus();
+        showToast(
+          `✓ Saved ${txns.length} receipts (RM ${totalMyr.toFixed(
+            2
+          )}) linked to 1 A4 file!`
+        );
+      } catch (syncErr) {
+        showToast(
+          `Saved ${txns.length} receipts on phone (Cloud sync pending: ${syncErr.message})`
+        );
+      }
+    } else {
+      showToast(
+        `Saved ${txns.length} receipts (RM ${totalMyr.toFixed(
+          2
+        )}) locally! Connect Google to sync.`
+      );
+    }
+
+    clearBatch();
+    await refreshPendingCountAndHistory();
+  } finally {
+    saveBatchBtn.disabled = false;
+    updateSaveBatchButtonLabel();
+    refreshHeaderStatus();
+  }
+}
+
 // ---------------- Saving & Offline Queue Sync ----------------
 
 async function handleFormSubmit(e) {
@@ -556,17 +1065,55 @@ async function syncAllPendingTransactions() {
   btn.textContent = "Syncing...";
 
   let okCount = 0;
-  // Sync in chronological order so Sheet rows stay ordered
-  for (const txn of [...pending].reverse()) {
+  // Sync in chronological order; group A4 batch items by batchId so A4 photo uploads once
+  const chronological = [...pending].reverse();
+  const processedBatchIds = new Set();
+
+  for (const txn of chronological) {
     try {
-      const res = await syncTransactionToGoogle(txn);
-      await saveLocalTransaction({
-        ...txn,
-        status: "synced",
-        receiptBase64: null,
-        receiptUrl: res.receiptUrl || "",
-      });
-      okCount++;
+      if (txn.batchId) {
+        if (processedBatchIds.has(txn.batchId)) continue;
+        processedBatchIds.add(txn.batchId);
+
+        const group = chronological.filter((t) => t.batchId === txn.batchId);
+        const carrier = group.find((t) => t.receiptBase64);
+        // Also check if another item from the same batch was already synced earlier
+        const existingSyncedUrl =
+          all.find((t) => t.batchId === txn.batchId && t.receiptUrl)?.receiptUrl || "";
+        const sharedReceipt = carrier
+          ? {
+              base64: carrier.receiptBase64,
+              mimeType: carrier.receiptMimeType || "image/jpeg",
+              extension: carrier.receiptExtension || "jpg",
+              uploadedUrl: existingSyncedUrl,
+            }
+          : existingSyncedUrl
+          ? { uploadedUrl: existingSyncedUrl }
+          : null;
+
+        const res = await syncBatchTransactionsToGoogle({
+          txns: group,
+          sharedReceipt,
+        });
+        for (const item of group) {
+          await saveLocalTransaction({
+            ...item,
+            status: "synced",
+            receiptBase64: null,
+            receiptUrl: res.receiptUrl || "",
+          });
+          okCount++;
+        }
+      } else {
+        const res = await syncTransactionToGoogle(txn);
+        await saveLocalTransaction({
+          ...txn,
+          status: "synced",
+          receiptBase64: null,
+          receiptUrl: res.receiptUrl || "",
+        });
+        okCount++;
+      }
     } catch (err) {
       showToast(`Stopped at "${txn.description}": ${err.message}`);
       break;
@@ -800,12 +1347,14 @@ async function saveSettingsFromModal() {
     geminiApiKey: el("geminiKeyInput").value.trim(),
     geminiModel: el("geminiModelSelect").value,
     googleClientId: el("googleClientIdInput").value.trim(),
-    categories: cats.length ? cats : ["Meals", "Others"],
+    categories: cats.length ? cats : [...DEFAULT_CATEGORIES],
     paymentMethods: methods.length ? methods : DEFAULT_PAYMENT_METHODS,
   });
 
   renderCategoryChips();
   renderPaymentChips();
+  populateBatchDefaultPaymentSelect();
+  if (batchItems.length > 0) renderBatchItems();
   refreshHeaderStatus();
 
   if (getValidAccessToken()) {
@@ -823,21 +1372,14 @@ async function saveSettingsFromModal() {
 // ---------------- Event Listeners ----------------
 
 function bindEvents() {
-  // Main Navigation Tabs
+  // Main Navigation Tabs (Single | A4 Batch | History)
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const target = btn.dataset.tab;
-      document.querySelectorAll(".tab-btn").forEach((b) => {
-        b.classList.toggle("active", b === btn);
-        b.setAttribute("aria-selected", b === btn ? "true" : "false");
-      });
-      el("tab-record").classList.toggle("hidden", target !== "record");
-      el("tab-history").classList.toggle("hidden", target !== "history");
-      if (target === "history") refreshPendingCountAndHistory();
+      switchMainTab(btn.dataset.tab);
     });
   });
 
-  // 3 Capture Buttons
+  // 3 Single Capture Buttons
   el("snapReceiptBtn").addEventListener("click", () => cameraInput.click());
   el("uploadOnlineBtn").addEventListener("click", () => uploadInput.click());
   el("manualCashBtn").addEventListener("click", () => {
@@ -859,10 +1401,54 @@ function bindEvents() {
   el("rescanGeminiBtn").addEventListener("click", () => runGeminiAutoFill());
   el("removeReceiptBtn").addEventListener("click", () => clearReceipt());
 
-  // Lightbox preview on receipt thumbnail tap
+  // A4 Multi-Receipt Batch Controls
+  el("snapBatchBtn").addEventListener("click", () => batchCameraInput.click());
+  el("uploadBatchBtn").addEventListener("click", () => batchUploadInput.click());
+  batchCameraInput.addEventListener("change", (e) =>
+    handleBatchFileSelected(e.target.files?.[0])
+  );
+  batchUploadInput.addEventListener("change", (e) =>
+    handleBatchFileSelected(e.target.files?.[0])
+  );
+  el("rescanBatchBtn").addEventListener("click", () => runBatchGeminiScan());
+  el("addBatchItemBtn").addEventListener("click", () => addManualBatchItem());
+  el("clearBatchBtn").addEventListener("click", () => clearBatch());
+  saveBatchBtn.addEventListener("click", () => handleSaveBatch());
+
+  batchDefaultPaymentSelect.addEventListener("change", () => {
+    const val = batchDefaultPaymentSelect.value;
+    for (const it of batchItems) {
+      if (!it.paymentAutoMatched) {
+        it.paymentMethod = val;
+      }
+    }
+    renderBatchItems();
+  });
+
+  el("applyDefaultPaymentAllBtn").addEventListener("click", () => {
+    const val = batchDefaultPaymentSelect.value;
+    for (const it of batchItems) {
+      it.paymentMethod = val;
+      it.paymentAutoMatched = true;
+    }
+    renderBatchItems();
+    showToast(`Applied "${val}" to all ${batchItems.length} receipts.`);
+  });
+
+  // Lightbox preview on single or A4 receipt thumbnail tap
   receiptThumbWrap.addEventListener("click", () => {
     if (currentReceipt && !currentReceipt.isPdf && currentReceipt.previewDataUrl) {
       el("lightboxImg").src = currentReceipt.previewDataUrl;
+      el("lightboxModal").classList.remove("hidden");
+    }
+  });
+  batchThumbWrap.addEventListener("click", () => {
+    if (
+      currentBatchReceipt &&
+      !currentBatchReceipt.isPdf &&
+      currentBatchReceipt.previewDataUrl
+    ) {
+      el("lightboxImg").src = currentBatchReceipt.previewDataUrl;
       el("lightboxModal").classList.remove("hidden");
     }
   });
@@ -975,6 +1561,8 @@ function bindEvents() {
       );
       renderCategoryChips();
       renderPaymentChips();
+      populateBatchDefaultPaymentSelect();
+      if (batchItems.length > 0) renderBatchItems();
       updateSettingsGoogleUi();
       refreshHeaderStatus();
       showToast("Connected & provisioned Expense Ledger in Google Drive!");
@@ -1023,6 +1611,16 @@ function bindEvents() {
     }
   });
 
+  el("loadExpenseCodesPresetBtn").addEventListener("click", () => {
+    el("categoriesTextarea").value = DEFAULT_CATEGORIES.join("\n");
+    showToast("Loaded 11 company 65xx Expense Codes.");
+  });
+
+  el("loadPersonalCategoriesPresetBtn").addEventListener("click", () => {
+    el("categoriesTextarea").value = PERSONAL_CATEGORIES.join("\n");
+    showToast("Loaded Personal Family categories preset.");
+  });
+
   el("loadMyCardsPresetBtn").addEventListener("click", () => {
     el("paymentMethodsTextarea").value = formatPaymentMethodsText(
       DEFAULT_PAYMENT_METHODS
@@ -1052,6 +1650,8 @@ function bindEvents() {
         );
         renderCategoryChips();
         renderPaymentChips();
+        populateBatchDefaultPaymentSelect();
+        if (batchItems.length > 0) renderBatchItems();
         showToast("Pulled Categories & Cards from Google Sheet!");
       }
     } catch (err) {
