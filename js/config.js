@@ -107,8 +107,9 @@ export const EMBEDDED_GOOGLE_CLIENT_ID =
 
 // App release tag & optional write-only Apps Script webhook for active-tester roster
 // (sends ONLY name, email, device & appVersion — never financial entries, receipts, or keys)
-export const APP_VERSION = "spendsnap-v9";
-export const EMBEDDED_USAGE_WEBHOOK_URL = "";
+export const APP_VERSION = "spendsnap-v10";
+export const EMBEDDED_USAGE_WEBHOOK_URL =
+  "https://script.google.com/macros/s/AKfycbxD2Fn88SY8MrWepoKiwt5PfT3jxdy5iO0pKpsdJLRl46JGT_ELnkZUgF6UkkWVpd0D/exec";
 
 const SETTINGS_KEY = "spendsnap_settings_v1";
 
