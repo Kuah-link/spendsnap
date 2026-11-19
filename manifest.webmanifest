@@ -1,6 +1,6 @@
 {
-  "name": "SpendSnap — Smart Expense Tracker",
-  "short_name": "SpendSnap",
+  "name": "SpendSnaps — Smart Expense Tracker",
+  "short_name": "SpendSnaps",
   "description": "Snap receipts with Gemini auto-fill, log cash or online spending, and sync directly to Google Sheets & Drive.",
   "start_url": "./index.html",
   "scope": "./",

@@ -437,7 +437,7 @@ function buildDashboardRows() {
   const normYearPrefix = 'TRIM(TO_TEXT($E$3))&"-*"';
 
   const dashboardRows = [
-    ["SPENDSNAP — EXPENSE LEDGER DASHBOARD", "", "", "", "", "", ""],
+    ["SPENDSNAPS — EXPENSE LEDGER DASHBOARD", "", "", "", "", "", ""],
     ["", "", "", "", "", "", ""],
     [
       "Selected Month (YYYY-MM):",
@@ -543,7 +543,7 @@ function buildBukkuExportRows() {
   return [
     [
       "#",
-      "SPENDSNAP — BUKKU EXPENSE CLAIM COPY-PASTE EXPORT",
+      "SPENDSNAPS — BUKKU EXPENSE CLAIM COPY-PASTE EXPORT",
       "", "", "", "", "", "", "", "", "", "", "", "",
     ],
     [

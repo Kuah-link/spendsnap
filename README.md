@@ -1,4 +1,4 @@
-# SpendSnap — Smart Personal Expense Tracker PWA
+# SpendSnaps — Smart Personal Expense Tracker PWA
 
 A zero-build, mobile-first Progressive Web App built for **Xiaomi 14 Ultra (Android)** + **Google Workspace** + **Gemini AI**.
 
@@ -29,13 +29,13 @@ Then open `http://localhost:8090` in Chrome. You can paste your **Gemini API Key
 
 Because this app uses Google's **non-sensitive `drive.file` scope**, it can only access the `Expense Tracker` folder and `Expense Ledger` Sheet that it creates—never the rest of your Drive—and requires **no paid security audit**.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) signed into your **Google Workspace Business Plus** account and create a new project (e.g., `SpendSnap`).
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) signed into your **Google Workspace Business Plus** account and create a new project (e.g., `SpendSnaps`).
 2. **Enable 2 APIs** (`APIs & Services` → `Library`):
    - Search **Google Drive API** → click **Enable**
    - Search **Google Sheets API** → click **Enable**
 3. **Configure OAuth Consent Screen** (`APIs & Services` → `OAuth consent screen` / `Google Auth Platform`):
    - Choose **External** (so your colleague on *another* Google Workspace domain or personal Gmail can also sign in; pick *Internal* only if everyone is on your exact same domain).
-   - Fill App Name (`SpendSnap`) and your email.
+   - Fill App Name (`SpendSnaps`) and your email.
    - Scopes: Add `.../auth/drive.file`, `email`, `profile` (all non-sensitive).
    - Either add your email + your colleague's email under **Test users**, OR click **Publish App** (since `drive.file` is non-sensitive, publishing requires zero Google review).
 4. **Create OAuth Client ID** (`APIs & Services` → `Credentials` → `+ Create Credentials` → `OAuth client ID`):
@@ -75,7 +75,7 @@ Pick either free static host (takes ~1 minute, zero monthly cost):
    - *(Note: On iOS, make sure Safari Settings → "Block Pop-ups" is toggled off when signing into Google the first time.)*
 
 ### First Launch Setup
-Open **SpendSnap** from your home screen → tap **Settings (⚙)**:
+Open **SpendSnaps** from your home screen → tap **Settings (⚙)**:
 - Paste your **Gemini API Key** ([Get from Google AI Studio](https://aistudio.google.com/apikey)).
 - Optional: Add the **last 4 digits** next to your credit cards in Section 4 (e.g., `RHB Shell | card | 4821, Shell`) so Gemini automatically picks the exact card from terminal slips!
 - Tap **Sign in with Google** → done!
@@ -85,7 +85,7 @@ Open **SpendSnap** from your home screen → tap **Settings (⚙)**:
 ## 5. Sharing with a Colleague on Another Google Workspace Domain
 
 1. If your Google OAuth app is in *Testing* mode, add their email in Google Cloud Console → `Audience / Test users` (or set status to *In Production*).
-2. In SpendSnap **Settings (⚙)**, tap **Copy Colleague Invite Link** and send it to them.
+2. In SpendSnaps **Settings (⚙)**, tap **Copy Colleague Invite Link** and send it to them.
 3. When your colleague opens that link:
    - Your OAuth Client ID is pre-filled automatically.
    - They tap **Colleague Simple Preset** in Settings (gives clean `Cash`, `QR / eWallet`, `Credit Card`, `Online Banking` instead of your 8 personal cards).
